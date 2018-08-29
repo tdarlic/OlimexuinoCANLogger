@@ -130,8 +130,36 @@ int main(void) {
 	MX_CAN_Init();
 	MX_I2C2_Init();
 	MX_USB_PCD_Init();
-	/* USER CODE BEGIN 2 */
 
+	/* USER CODE BEGIN 2 */
+	char buffer[128];
+	static FATFS g_sFatFs;
+	static FRESULT fresult;
+	FIL file;
+	int len;
+	WORD bytes_written;
+
+	//mount SD card
+	fresult = f_mount(0, &g_sFatFs, 1);
+
+	if (fresult == FR_OK){
+	//open file on SD card
+	fresult = f_open(&file, "file.txt", FA_OPEN_ALWAYS | FA_WRITE);
+
+	}
+	if (fresult == FR_OK){
+	//go to the end of the file
+	fresult = f_lseek(&file, file.fsize);
+	}
+
+	//generate some string
+	len = sprintf(buffer, "Hello World!\r\n");
+
+	//write data to the file
+	fresult = f_write(&file, buffer, 15, &bytes_written);
+
+	//close file
+	fresult = f_close(&file);
 	/* USER CODE END 2 */
 
 	/* USER CODE BEGIN RTOS_MUTEX */
@@ -423,6 +451,7 @@ void StartDefaultTask(void const * argument) {
 	/* USER CODE BEGIN 5 */
 	/* Infinite loop */
 	for (;;) {
+		sdcard_systick_timerproc();
 		osDelay(1);
 	}
 	/* USER CODE END 5 */

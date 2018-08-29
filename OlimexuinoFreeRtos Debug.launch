@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <launchConfiguration type="ilg.gnumcueclipse.debug.gdbjtag.jlink.launchConfigurationType">
+<stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.PERIPHERALS" value="&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot; standalone=&quot;no&quot;?&gt;&#10;&lt;peripherals&gt;&#10;&lt;peripheral name=&quot;SPI2&quot;/&gt;&#10;&lt;/peripherals&gt;&#10;"/>
 <booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.doConnectToRunning" value="false"/>
 <booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.doContinue" value="true"/>
 <booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.doDebugInRam" value="false"/>
@@ -16,7 +17,7 @@
 <booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.enableSemihosting" value="true"/>
 <booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.enableSemihostingIoclientGdbClient" value="false"/>
 <booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.enableSemihostingIoclientTelnet" value="true"/>
-<booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.enableSwo" value="false"/>
+<booleanAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.enableSwo" value="true"/>
 <intAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.firstResetSpeed" value="1000"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.firstResetType" value=""/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.gdbClientOtherCommands" value="set mem inaccessible-by-default off"/>
@@ -37,7 +38,7 @@
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.otherInitCommands" value=""/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.otherRunCommands" value=""/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.secondResetType" value=""/>
-<intAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.swoEnableTargetCpuFreq" value="8000000"/>
+<intAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.swoEnableTargetCpuFreq" value="0"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.swoEnableTargetPortMask" value="0x1"/>
 <intAttribute key="ilg.gnumcueclipse.debug.gdbjtag.jlink.swoEnableTargetSwoFreq" value="0"/>
 <stringAttribute key="ilg.gnumcueclipse.debug.gdbjtag.svdPath" value=""/>

@@ -85,13 +85,12 @@
 #define CMD55    (0x40+55)    /* APP_CMD */
 #define CMD58    (0x40+58)    /* READ_OCR */
 /* Private variables ---------------------------------------------------------*/
-static volatile DSTATUS Stat = STA_NOINIT; /* Disk status */
-static volatile BYTE Timer1, Timer2; /* 100Hz decrement timer */
+volatile BYTE Timer1, Timer2; /* 100Hz decrement timer */
 static BYTE CardType; /* b0:MMC, b1:SDC, b2:Block addressing */
 static BYTE PowerFlag = 0; /* indicates if "power" is on */
-/* Disk status */
-static volatile DSTATUS Stat = STA_NOINIT;
+static volatile DSTATUS Stat = STA_NOINIT; /* Disk status */
 
+extern SPI_HandleTypeDef hspi2;
 /* USER CODE END DECL */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -118,26 +117,30 @@ Diskio_drvTypeDef USER_Driver = { USER_initialize, USER_status, USER_read,
 /**
  * @brief Pulls down chip select pin for SD card and selects card
  */
-static
-void SELECT(void) {
+static void SELECT(void) {
 	HAL_GPIO_WritePin(MMC_CS_GPIO_Port, MMC_CS_Pin, GPIO_PIN_RESET);
 }
 
 /**
  * @brief Pulls up chip select pin for SD card and deselects it
  */
-static
-void DESELECT(void) {
+static void DESELECT(void) {
 	HAL_GPIO_WritePin(MMC_CS_GPIO_Port, MMC_CS_Pin, GPIO_PIN_SET);
 }
-
-static
-void xmit_spi(BYTE Data) {
+/**
+ * @brief Transmit 1 byte of data over SPI
+ * @param Data BYTE
+ */
+static void xmit_spi(BYTE Data) {
 	while (HAL_SPI_GetState(&hspi2) != HAL_SPI_STATE_READY)
 		;
 	HAL_SPI_Transmit(&hspi2, &Data, 1, 5000);
 }
 
+/**
+ * @brief Receive one byte of data over SPI while transmitting dummy byte 0xFF
+ * @return Data BYTE
+ */
 static BYTE rcvr_spi(void) {
 	unsigned char Dummy, Data;
 	Dummy = 0xFF;
@@ -149,16 +152,17 @@ static BYTE rcvr_spi(void) {
 	return Data;
 }
 
+/**
+ * @brief Read one byte of data over SPI and return in function parameter
+ * @param dst *BYTE Data received
+ */
 static void rcvr_spi_m(BYTE *dst) {
 	*dst = rcvr_spi();
 }
 
-/*-----------------------------------------------------------------------*/
-/* Wait for card ready                                                   */
-/*-----------------------------z------------------------------------------*/
-
 /**
  * @brief Wait for card to be ready
+ * @brief Function will wait for 50 ticks of Timer2
  * @return BYTE res
  */
 static BYTE wait_ready(void) {
@@ -172,7 +176,6 @@ static BYTE wait_ready(void) {
 
 	return res;
 }
-
 
 /**
  *@brief Power Control  (Platform dependent)
@@ -209,7 +212,9 @@ static void power_on(void) {
 	PowerFlag = 1;
 }
 
-
+/**
+ * @brief Sets PowerFlag to off (0)
+ */
 static void power_off(void) {
 	PowerFlag = 0;
 }
@@ -218,8 +223,7 @@ static void power_off(void) {
  * @brief Socket power state: 0=off, 1=on
  * @return PowerFlag
  */
-static int chk_power(void)
-{
+static int chk_power(void) {
 	return PowerFlag;
 }
 
@@ -229,7 +233,7 @@ static int chk_power(void)
  * @param btr Byte count (must be even number)
  * @return true
  */
-static bool rcvr_datablock(BYTE *buff, UINT btr ) {
+static bool rcvr_datablock(BYTE *buff, UINT btr) {
 	BYTE token;
 
 	Timer1 = 10;
@@ -261,7 +265,7 @@ static bool rcvr_datablock(BYTE *buff, UINT btr ) {
  * @return
  */
 static bool xmit_datablock(const BYTE *buff, BYTE token) {
-	BYTE resp, wc;
+	BYTE resp = 0, wc;
 	uint32_t i = 0;
 
 	if (wait_ready() != 0xFF)
@@ -341,10 +345,65 @@ static BYTE send_cmd(BYTE cmd, DWORD arg) {
  * @param  pdrv: Physical drive number (0..)
  * @retval DSTATUS: Operation status
  */
-DSTATUS USER_initialize(BYTE pdrv /* Physical drive nmuber to identify the drive */
+DSTATUS USER_initialize(BYTE pdrv /* Physical drive number to identify the drive */
 ) {
 	/* USER CODE BEGIN INIT */
-	Stat = STA_NOINIT;
+	BYTE n, ty, ocr[4];
+
+	if (pdrv)
+		return STA_NOINIT; /* Supports only single drive */
+	if (Stat & STA_NODISK)
+		return Stat; /* No card in the socket */
+
+	power_on(); /* Force socket power on */
+	//send_initial_clock_train();
+
+	SELECT(); /* CS = L */
+	ty = 0;
+
+	if (send_cmd(CMD0, 0) == 1) { /* Enter Idle state */
+		Timer1 = 100; /* Initialization timeout of 1000 msec */
+		if (send_cmd(CMD8, 0x1AA) == 1) { /* SDC Ver2+ */
+			for (n = 0; n < 4; n++)
+				ocr[n] = rcvr_spi();
+			if (ocr[2] == 0x01 && ocr[3] == 0xAA) { /* The card can work at vdd range of 2.7-3.6V */
+				do {
+					if (send_cmd(CMD55, 0) <= 1
+							&& send_cmd(CMD41, 1UL << 30) == 0)
+						break; /* ACMD41 with HCS bit */
+				} while (Timer1);
+				if (Timer1 && send_cmd(CMD58, 0) == 0) { /* Check CCS bit */
+					for (n = 0; n < 4; n++)
+						ocr[n] = rcvr_spi();
+					ty = (ocr[0] & 0x40) ? 6 : 2;
+				}
+			}
+		} else { /* SDC Ver1 or MMC */
+			ty = (send_cmd(CMD55, 0) <= 1 && send_cmd(CMD41, 0) <= 1) ? 2 : 1; /* SDC : MMC */
+			do {
+				if (ty == 2) {
+					if (send_cmd(CMD55, 0) <= 1 && send_cmd(CMD41, 0) == 0)
+						break; /* ACMD41 */
+				} else {
+					if (send_cmd(CMD1, 0) == 0)
+						break; /* CMD1 */
+				}
+			} while (Timer1);
+			if (!Timer1 || send_cmd(CMD16, 512) != 0) /* Select R/W block length */
+				ty = 0;
+		}
+	}
+
+	CardType = ty;
+	DESELECT(); /* CS = H */
+	rcvr_spi(); /* Idle (Release DO) */
+
+	if (ty) /* Initialization succeded */
+		Stat &= ~STA_NOINIT; /* Clear STA_NOINIT */
+	else
+		/* Initialization failed */
+		power_off();
+
 	return Stat;
 	/* USER CODE END INIT */
 }
@@ -357,7 +416,8 @@ DSTATUS USER_initialize(BYTE pdrv /* Physical drive nmuber to identify the drive
 DSTATUS USER_status(BYTE pdrv /* Physical drive number to identify the drive */
 ) {
 	/* USER CODE BEGIN STATUS */
-	Stat = STA_NOINIT;
+	if (pdrv)
+		return STA_NOINIT; /* Supports only single drive */
 	return Stat;
 	/* USER CODE END STATUS */
 }
@@ -376,7 +436,35 @@ DWORD sector, /* Sector address in LBA */
 UINT count /* Number of sectors to read */
 ) {
 	/* USER CODE BEGIN READ */
-	return RES_OK;
+	if (pdrv || !count)
+		return RES_PARERR;
+	if (Stat & STA_NOINIT)
+		return RES_NOTRDY;
+
+	if (!(CardType & 4))
+		sector *= 512; /* Convert to byte address if needed */
+
+	SELECT(); /* CS = L */
+
+	if (count == 1) { /* Single block read */
+		if ((send_cmd(CMD17, sector) == 0) /* READ_SINGLE_BLOCK */
+		&& rcvr_datablock(buff, 512))
+			count = 0;
+	} else { /* Multiple block read */
+		if (send_cmd(CMD18, sector) == 0) { /* READ_MULTIPLE_BLOCK */
+			do {
+				if (!rcvr_datablock(buff, 512))
+					break;
+				buff += 512;
+			} while (--count);
+			send_cmd(CMD12, 0); /* STOP_TRANSMISSION */
+		}
+	}
+
+	DESELECT(); /* CS = H */
+	rcvr_spi(); /* Idle (Release DO) */
+
+	return count ? RES_ERROR : RES_OK;
 	/* USER CODE END READ */
 }
 
@@ -396,6 +484,42 @@ UINT count /* Number of sectors to write */
 ) {
 	/* USER CODE BEGIN WRITE */
 	/* USER CODE HERE */
+	if (pdrv || !count)
+		return RES_PARERR;
+	if (Stat & STA_NOINIT)
+		return RES_NOTRDY;
+	if (Stat & STA_PROTECT)
+		return RES_WRPRT;
+
+	if (!(CardType & 4))
+		sector *= 512; /* Convert to byte address if needed */
+
+	SELECT(); /* CS = L */
+
+	if (count == 1) { /* Single block write */
+		if ((send_cmd(CMD24, sector) == 0) /* WRITE_BLOCK */
+		&& xmit_datablock(buff, 0xFE))
+			count = 0;
+	} else { /* Multiple block write */
+		if (CardType & 2) {
+			send_cmd(CMD55, 0);
+			send_cmd(CMD23, count); /* ACMD23 */
+		}
+		if (send_cmd(CMD25, sector) == 0) { /* WRITE_MULTIPLE_BLOCK */
+			do {
+				if (!xmit_datablock(buff, 0xFC))
+					break;
+				buff += 512;
+			} while (--count);
+			if (!xmit_datablock(0, 0xFD)) /* STOP_TRAN token */
+				count = 1;
+		}
+	}
+
+	DESELECT(); /* CS = H */
+	rcvr_spi(); /* Idle (Release DO) */
+
+	return count ? RES_ERROR : RES_OK;
 	return RES_OK;
 	/* USER CODE END WRITE */
 }
@@ -414,10 +538,106 @@ BYTE cmd, /* Control code */
 void *buff /* Buffer to send/receive control data */
 ) {
 	/* USER CODE BEGIN IOCTL */
-	DRESULT res = RES_ERROR;
+	DRESULT res;
+	BYTE n, csd[16], *ptr = buff;
+	WORD csize;
+
+	if (pdrv)
+		return RES_PARERR;
+
+	res = RES_ERROR;
+
+	if (cmd == CTRL_POWER) {
+		switch (*ptr) {
+		case 0: /* Sub control code == 0 (POWER_OFF) */
+			if (chk_power())
+				power_off(); /* Power off */
+			res = RES_OK;
+			break;
+		case 1: /* Sub control code == 1 (POWER_ON) */
+			power_on(); /* Power on */
+			res = RES_OK;
+			break;
+		case 2: /* Sub control code == 2 (POWER_GET) */
+			*(ptr + 1) = (BYTE) chk_power();
+			res = RES_OK;
+			break;
+		default:
+			res = RES_PARERR;
+		}
+	} else {
+		if (Stat & STA_NOINIT)
+			return RES_NOTRDY;
+
+		SELECT(); /* CS = L */
+
+		switch (cmd) {
+		case GET_SECTOR_COUNT: /* Get number of sectors on the disk (DWORD) */
+			if ((send_cmd(CMD9, 0) == 0) && rcvr_datablock(csd, 16)) {
+				if ((csd[0] >> 6) == 1) { /* SDC ver 2.00 */
+					csize = csd[9] + ((WORD) csd[8] << 8) + 1;
+					*(DWORD*) buff = (DWORD) csize << 10;
+				} else { /* MMC or SDC ver 1.XX */
+					n = (csd[5] & 15) + ((csd[10] & 128) >> 7)
+							+ ((csd[9] & 3) << 1) + 2;
+					csize = (csd[8] >> 6) + ((WORD) csd[7] << 2)
+							+ ((WORD) (csd[6] & 3) << 10) + 1;
+					*(DWORD*) buff = (DWORD) csize << (n - 9);
+				}
+				res = RES_OK;
+			}
+			break;
+
+		case GET_SECTOR_SIZE: /* Get sectors on the disk (WORD) */
+			*(WORD*) buff = 512;
+			res = RES_OK;
+			break;
+
+		case CTRL_SYNC: /* Make sure that data has been written */
+			if (wait_ready() == 0xFF)
+				res = RES_OK;
+			break;
+
+		case MMC_GET_CSD: /* Receive CSD as a data block (16 bytes) */
+			if (send_cmd(CMD9, 0) == 0 /* READ_CSD */
+			&& rcvr_datablock(ptr, 16))
+				res = RES_OK;
+			break;
+
+		case MMC_GET_CID: /* Receive CID as a data block (16 bytes) */
+			if (send_cmd(CMD10, 0) == 0 /* READ_CID */
+			&& rcvr_datablock(ptr, 16))
+				res = RES_OK;
+			break;
+
+		case MMC_GET_OCR: /* Receive OCR as an R3 resp (4 bytes) */
+			if (send_cmd(CMD58, 0) == 0) { /* READ_OCR */
+				for (n = 0; n < 4; n++)
+					*ptr++ = rcvr_spi();
+				res = RES_OK;
+			}
+
+			//        case MMC_GET_TYPE :    /* Get card type flags (1 byte) */
+			//            *ptr = CardType;
+			//            res = RES_OK;
+			//            break;
+			/* no break */
+		default:
+			res = RES_PARERR;
+		}
+
+		DESELECT(); /* CS = H */
+		rcvr_spi(); /* Idle (Release DO) */
+	}
+
 	return res;
 	/* USER CODE END IOCTL */
 }
 #endif /* _USE_IOCTL == 1 */
+
+
+
+
+
 
 /************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/

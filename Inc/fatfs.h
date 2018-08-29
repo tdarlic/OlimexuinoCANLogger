@@ -65,8 +65,10 @@ extern uint8_t retUSER; /* Return value for USER */
 extern char USERPath[4]; /* USER logical drive path */
 extern FATFS USERFatFS; /* File system object for USER logical drive */
 extern FIL USERFile; /* File object for USER */
+extern volatile BYTE Timer1, Timer2; /* 100Hz decrement timer */
 
 void MX_FATFS_Init(void);
+extern inline void sdcard_systick_timerproc(void);
 
 /* USER CODE BEGIN Prototypes */
 
