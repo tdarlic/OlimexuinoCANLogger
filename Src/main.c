@@ -72,6 +72,39 @@ PCD_HandleTypeDef hpcd_USB_FS;
 
 osThreadId defaultTaskHandle;
 
+typedef struct {
+	uint32_t bitrate;
+	uint32_t Prescaler; /*!< Specifies the length of a time quantum.
+	 This parameter must be a number between Min_Data = 1 and Max_Data = 1024 */
+
+	uint32_t BS1; /*!< Specifies the number of time quanta in Bit Segment 1.
+	 This parameter can be a value of @ref CAN_time_quantum_in_bit_segment_1 */
+
+	uint32_t BS2; /*!< Specifies the number of time quanta in Bit Segment 2.
+	 This parameter can be a value of @ref CAN_time_quantum_in_bit_segment_2 */
+
+} CAN_BitrateSetting;
+// @formatter:off
+/**
+ * Calculations taken from webpage:
+ * http://www.bittiming.can-wiki.info/
+ * With following settings
+ * Type: bxCAN, Clock: 72MHz, max brp: 1024,
+ * SP: 87.5%, min tq: 8, max tq: 25, FD factor: undefined, SJW: 1
+ */
+const CAN_BitrateSetting CAN_BitrateSettingsArray[8] = {
+		//brp, pre, BS1, BS2
+		{ 500, 9, CAN_BS1_13TQ, CAN_BS2_2TQ },
+		{ 250, 18, CAN_BS1_13TQ, CAN_BS2_2TQ },
+		{ 125, 36, CAN_BS1_13TQ, CAN_BS2_2TQ },
+		{ 100, 45, CAN_BS1_13TQ, CAN_BS2_2TQ },
+		{ 83, 54, CAN_BS1_13TQ, CAN_BS2_2TQ },
+		{ 50, 90, CAN_BS1_13TQ, CAN_BS2_2TQ },
+		{ 20, 225, CAN_BS1_13TQ, CAN_BS2_2TQ },
+		{ 10, 450, CAN_BS1_13TQ, CAN_BS2_2TQ }
+};
+// @formatter:on
+
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
 #define STRLINE_LENGTH 1024
@@ -471,13 +504,13 @@ static void MX_GPIO_Init(void) {
 
 	/* GPIO Ports Clock Enable */
 	__HAL_RCC_GPIOC_CLK_ENABLE()
-	;
+				;
 	__HAL_RCC_GPIOD_CLK_ENABLE()
-	;
+				;
 	__HAL_RCC_GPIOA_CLK_ENABLE()
-	;
+				;
 	__HAL_RCC_GPIOB_CLK_ENABLE()
-	;
+				;
 
 	/*Configure GPIO pin Output Level */
 	HAL_GPIO_WritePin(CAN_CTRL_GPIO_Port, CAN_CTRL_Pin, GPIO_PIN_RESET);
@@ -541,6 +574,8 @@ int read_config_file() {
 	bLogStdMsgs = 1;
 	bLogExtMsgs = 1;
 
+	uint8_t brs;
+
 	fresult = f_mount(&g_sFatFs, "0:", 0);
 
 	//open file on SD card
@@ -549,7 +584,7 @@ int read_config_file() {
 	if (fresult != FR_OK)
 		return 0;
 
-	while (f_gets(sLine, STRLINE_LENGTH, file)) {
+	while (f_gets(sLine, STRLINE_LENGTH, &file)) {
 		if (sscanf(sLine, "%s %d", name, &value) == 0) {
 			continue;
 		}
@@ -572,36 +607,41 @@ int read_config_file() {
 		}
 	}
 
-	hcan.Instance = CAN1;
-	hcan.Init.Prescaler = 16;
-	hcan.Init.Mode = CAN_MODE_NORMAL;
-	hcan.Init.SJW = CAN_SJW_1TQ;
-	hcan.Init.BS1 = CAN_BS1_1TQ;
-	hcan.Init.BS2 = CAN_BS2_1TQ;
-	hcan.Init.TTCM = DISABLE;
-	hcan.Init.ABOM = DISABLE;
-	hcan.Init.AWUM = DISABLE;
-	hcan.Init.NART = DISABLE;
-	hcan.Init.RFLM = DISABLE;
-	hcan.Init.TXFP = DISABLE;
+	// configure CAN
+	brs = get_CAN_setBaudeRate(baud);
+
+	if (HAL_CAN_DeInit(&hcan) != HAL_OK) {
+		_Error_Handler(__FILE__, __LINE__);
+	}
+	hcan.Init.Prescaler = CAN_BitrateSettingsArray[brs].Prescaler;
+	hcan.Init.BS1 = CAN_BitrateSettingsArray[brs].BS1;
+	hcan.Init.BS2 = CAN_BitrateSettingsArray[brs].BS2;
+	if (ack) {
+		hcan.Init.Mode = CAN_MODE_NORMAL;
+	} else {
+		hcan.Init.Mode = CAN_MODE_SILENT;
+	}
 	if (HAL_CAN_Init(&hcan) != HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
 	}
 
-	// configure CAN
-	baud = (int) (7 * baud / 1000.0 + 0.5); // prescaler value
-	if (ack)
-		cancfg.btr = CAN_BTR_SJW(0) | CAN_BTR_TS2(2) | CAN_BTR_TS1(1)
-				| CAN_BTR_BRP(baud - 1);
-	else
-		cancfg.btr =
-				CAN_BTR_SJW(
-						0) | CAN_BTR_TS2(2) | CAN_BTR_TS1(1) | CAN_BTR_BRP(baud - 1) | CAN_BTR_SILM; // silent mode flag
-	canStop(&CAND2);
-	canStart(&CAND2, &cancfg);
 	fclose_(file);
 
 	return res;
+}
+
+/**
+ * @brief Returns Prescaler, BS1 and BS2 settings for CAN calculated from bitrate
+ * @param bitrate
+ * @return CAN_BitrateSetting | default returns settings for 500 kbps
+ */
+int get_CAN_setBaudeRate(uint32_t bitrate) {
+	for (int var = 0; var < 8; ++var) {
+		if (bitrate == CAN_BitrateSettingsArray[var].bitrate) {
+			return var;
+		}
+	}
+	return 0;
 }
 
 /* StartDefaultTask function */
