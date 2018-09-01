@@ -59,7 +59,9 @@
 /* Private variables ---------------------------------------------------------*/
 CAN_HandleTypeDef hcan;
 
+CRC_HandleTypeDef hcrc;
 I2C_HandleTypeDef hi2c2;
+RTC_HandleTypeDef hrtc;
 
 SPI_HandleTypeDef hspi2;
 
@@ -72,7 +74,8 @@ osThreadId defaultTaskHandle;
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
-
+#define STRLINE_LENGTH 1024
+char sLine[STRLINE_LENGTH];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -84,6 +87,8 @@ static void MX_USART1_UART_Init(void);
 static void MX_CAN_Init(void);
 static void MX_I2C2_Init(void);
 static void MX_USB_PCD_Init(void);
+static void MX_RTC_Init(void);
+static void MX_CRC_Init(void);
 void StartDefaultTask(void const * argument);
 void blinkThread(void const *argument);
 
@@ -130,36 +135,11 @@ int main(void) {
 	MX_CAN_Init();
 	MX_I2C2_Init();
 	MX_USB_PCD_Init();
+	MX_RTC_Init();
+	MX_CRC_Init();
 
 	/* USER CODE BEGIN 2 */
-	char buffer[128];
-	static FATFS g_sFatFs;
-	static FRESULT fresult;
-	FIL file;
-	int len;
-	WORD bytes_written;
 
-	//mount SD card
-	fresult = f_mount(0, &g_sFatFs, 1);
-
-	if (fresult == FR_OK){
-	//open file on SD card
-	fresult = f_open(&file, "file.txt", FA_OPEN_ALWAYS | FA_WRITE);
-
-	}
-	if (fresult == FR_OK){
-	//go to the end of the file
-	fresult = f_lseek(&file, file.fsize);
-	}
-
-	//generate some string
-	len = sprintf(buffer, "Hello World!\r\n");
-
-	//write data to the file
-	fresult = f_write(&file, buffer, 15, &bytes_written);
-
-	//close file
-	fresult = f_close(&file);
 	/* USER CODE END 2 */
 
 	/* USER CODE BEGIN RTOS_MUTEX */
@@ -213,6 +193,41 @@ void blinkThread(void const *argument) {
 		osDelay(500);
 	}
 	osThreadTerminate(NULL);
+}
+
+/* USER CODE BEGIN 4 */
+/**
+ * @brief Test function used successfully to write to Sd card
+ */
+void WriteToSD() {
+	char buffer[128];
+	static FATFS g_sFatFs;
+	static FRESULT fresult;
+	FIL file;
+	int len;
+	UINT bytes_written;
+
+	/* init code for FATFS */
+	//MX_FATFS_Init();
+	//mount SD card
+	fresult = f_mount(&g_sFatFs, "0:", 0);
+
+	//open file on SD card
+	fresult = f_open(&file, "0:file.txt", FA_OPEN_ALWAYS | FA_WRITE);
+
+	if (fresult == FR_OK) {
+		//go to the end of the file
+		fresult = f_lseek(&file, file.fsize);
+	}
+
+	//generate some string
+	len = sprintf(buffer, "Hello World!\r\n");
+
+	//write data to the file
+	fresult = f_write(&file, buffer, 15, &bytes_written);
+
+	//close file
+	fresult = f_close(&file);
 }
 
 /**
@@ -380,6 +395,69 @@ static void MX_USB_PCD_Init(void) {
 
 }
 
+/* RTC init function */
+static void MX_RTC_Init(void) {
+
+	/* USER CODE BEGIN RTC_Init 0 */
+
+	/* USER CODE END RTC_Init 0 */
+
+	RTC_TimeTypeDef sTime;
+	RTC_DateTypeDef DateToUpdate;
+
+	/* USER CODE BEGIN RTC_Init 1 */
+
+	/* USER CODE END RTC_Init 1 */
+
+	/**Initialize RTC Only
+	 */
+	hrtc.Instance = RTC;
+	hrtc.Init.AsynchPrediv = RTC_AUTO_1_SECOND;
+	hrtc.Init.OutPut = RTC_OUTPUTSOURCE_NONE;
+	if (HAL_RTC_Init(&hrtc) != HAL_OK) {
+		_Error_Handler(__FILE__, __LINE__);
+	}
+	/* USER CODE BEGIN RTC_Init 2 */
+
+	/* USER CODE END RTC_Init 2 */
+
+	/**Initialize RTC and set the Time and Date
+	 */
+	sTime.Hours = 0x0;
+	sTime.Minutes = 0x0;
+	sTime.Seconds = 0x0;
+
+	if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK) {
+		_Error_Handler(__FILE__, __LINE__);
+	}
+	/* USER CODE BEGIN RTC_Init 3 */
+
+	/* USER CODE END RTC_Init 3 */
+
+	DateToUpdate.WeekDay = RTC_WEEKDAY_MONDAY;
+	DateToUpdate.Month = RTC_MONTH_JANUARY;
+	DateToUpdate.Date = 0x1;
+	DateToUpdate.Year = 0x0;
+
+	if (HAL_RTC_SetDate(&hrtc, &DateToUpdate, RTC_FORMAT_BCD) != HAL_OK) {
+		_Error_Handler(__FILE__, __LINE__);
+	}
+	/* USER CODE BEGIN RTC_Init 4 */
+
+	/* USER CODE END RTC_Init 4 */
+
+}
+
+/* CRC init function */
+static void MX_CRC_Init(void) {
+
+	hcrc.Instance = CRC;
+	if (HAL_CRC_Init(&hcrc) != HAL_OK) {
+		_Error_Handler(__FILE__, __LINE__);
+	}
+
+}
+
 /** Configure pins as 
  * Analog
  * Input
@@ -439,15 +517,97 @@ static void MX_GPIO_Init(void) {
 
 }
 
-/* USER CODE BEGIN 4 */
-
 /* USER CODE END 4 */
+
+int iFilterMask = 0;
+int iFilterValue = 0;
+unsigned char bLogStdMsgs = 1;
+unsigned char bLogExtMsgs = 1;
+unsigned char bIncludeTimestamp = 1;
+
+int read_config_file() {
+	static FATFS g_sFatFs;
+	static FRESULT fresult;
+	FIL file;
+	int value;
+	char name[128];
+	int baud;
+	int res = 0;
+	int ack = 0;
+
+	iFilterMask = 0;
+	iFilterValue = 0;
+	bIncludeTimestamp = 1;
+	bLogStdMsgs = 1;
+	bLogExtMsgs = 1;
+
+	fresult = f_mount(&g_sFatFs, "0:", 0);
+
+	//open file on SD card
+	fresult = f_open(&file, "0:Config.txt", FA_OPEN_EXISTING | FA_READ);
+	// if result is not FR_OK then there was an error opening
+	if (fresult != FR_OK)
+		return 0;
+
+	while (f_gets(sLine, STRLINE_LENGTH, file)) {
+		if (sscanf(sLine, "%s %d", name, &value) == 0) {
+			continue;
+		}
+
+		if (strcmp(name, "baud") == 0) {
+			baud = value;
+			res = 1; // at least we got baudrate, config file accepted
+		} else if (strcmp(name, "ack_en") == 0) {
+			ack = value;
+		} else if (strcmp(name, "id_filter_mask") == 0) {
+			iFilterMask = value;
+		} else if (strcmp(name, "id_filter_value") == 0) {
+			iFilterValue = value;
+		} else if (strcmp(name, "timestamp") == 0) {
+			bIncludeTimestamp = value;
+		} else if (strcmp(name, "log_std") == 0) {
+			bLogStdMsgs = value;
+		} else if (strcmp(name, "log_ext") == 0) {
+			bLogExtMsgs = value;
+		}
+	}
+
+	hcan.Instance = CAN1;
+	hcan.Init.Prescaler = 16;
+	hcan.Init.Mode = CAN_MODE_NORMAL;
+	hcan.Init.SJW = CAN_SJW_1TQ;
+	hcan.Init.BS1 = CAN_BS1_1TQ;
+	hcan.Init.BS2 = CAN_BS2_1TQ;
+	hcan.Init.TTCM = DISABLE;
+	hcan.Init.ABOM = DISABLE;
+	hcan.Init.AWUM = DISABLE;
+	hcan.Init.NART = DISABLE;
+	hcan.Init.RFLM = DISABLE;
+	hcan.Init.TXFP = DISABLE;
+	if (HAL_CAN_Init(&hcan) != HAL_OK) {
+		_Error_Handler(__FILE__, __LINE__);
+	}
+
+	// configure CAN
+	baud = (int) (7 * baud / 1000.0 + 0.5); // prescaler value
+	if (ack)
+		cancfg.btr = CAN_BTR_SJW(0) | CAN_BTR_TS2(2) | CAN_BTR_TS1(1)
+				| CAN_BTR_BRP(baud - 1);
+	else
+		cancfg.btr =
+				CAN_BTR_SJW(
+						0) | CAN_BTR_TS2(2) | CAN_BTR_TS1(1) | CAN_BTR_BRP(baud - 1) | CAN_BTR_SILM; // silent mode flag
+	canStop(&CAND2);
+	canStart(&CAND2, &cancfg);
+	fclose_(file);
+
+	return res;
+}
 
 /* StartDefaultTask function */
 void StartDefaultTask(void const * argument) {
 	/* init code for FATFS */
 	MX_FATFS_Init();
-
 	/* USER CODE BEGIN 5 */
 	/* Infinite loop */
 	for (;;) {
