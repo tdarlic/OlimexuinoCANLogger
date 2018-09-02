@@ -72,7 +72,9 @@ PCD_HandleTypeDef hpcd_USB_FS;
 
 osThreadId defaultTaskHandle;
 
-typedef struct {
+FATFS g_sFatFs;
+
+typedef struct CAN_BitrateSetting_t {
 	uint32_t bitrate;
 	uint32_t Prescaler; /*!< Specifies the length of a time quantum.
 	 This parameter must be a number between Min_Data = 1 and Max_Data = 1024 */
@@ -124,6 +126,8 @@ static void MX_RTC_Init(void);
 static void MX_CRC_Init(void);
 void StartDefaultTask(void const * argument);
 void blinkThread(void const *argument);
+static FRESULT mountSDCard();
+int read_config_file();
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
@@ -172,7 +176,10 @@ int main(void) {
 	MX_CRC_Init();
 
 	/* USER CODE BEGIN 2 */
-
+	/* init code for FATFS */
+	MX_FATFS_Init();
+	mountSDCard();
+	read_config_file();
 	/* USER CODE END 2 */
 
 	/* USER CODE BEGIN RTOS_MUTEX */
@@ -228,13 +235,17 @@ void blinkThread(void const *argument) {
 	osThreadTerminate(NULL);
 }
 
+static FRESULT mountSDCard() {
+	return f_mount(&g_sFatFs, "0:", 0);
+}
+
 /* USER CODE BEGIN 4 */
 /**
  * @brief Test function used successfully to write to Sd card
  */
 void WriteToSD() {
 	char buffer[128];
-	static FATFS g_sFatFs;
+
 	static FRESULT fresult;
 	FIL file;
 	int len;
@@ -263,11 +274,103 @@ void WriteToSD() {
 	fresult = f_close(&file);
 }
 
+int iFilterMask = 0;
+int iFilterValue = 0;
+unsigned char bLogStdMsgs = 1;
+unsigned char bLogExtMsgs = 1;
+unsigned char bIncludeTimestamp = 1;
+
+int read_config_file() {
+	FRESULT fresult;
+	FIL file;
+	int value;
+	char name[128];
+	int baud;
+	int res = 0;
+	int ack = 0;
+
+	iFilterMask = 0;
+	iFilterValue = 0;
+	bIncludeTimestamp = 1;
+	bLogStdMsgs = 1;
+	bLogExtMsgs = 1;
+
+	uint8_t brs;
+
+	//fresult = f_mount(&g_sFatFs, "0:", 0);
+
+	//open file on SD card
+	fresult = f_open(&file, "0:Config.txt", FA_OPEN_EXISTING | FA_READ);
+	// if result is not FR_OK then there was an error opening
+	if (fresult != FR_OK)
+		return 0;
+
+	while (f_gets(sLine, STRLINE_LENGTH, &file)) {
+		if (sscanf(sLine, "%s %d", name, &value) == 0) {
+			continue;
+		}
+
+		if (strcmp(name, "baud") == 0) {
+			baud = value;
+			res = 1; // at least we got baudrate, config file accepted
+		} else if (strcmp(name, "ack_en") == 0) {
+			ack = value;
+		} else if (strcmp(name, "id_filter_mask") == 0) {
+			iFilterMask = value;
+		} else if (strcmp(name, "id_filter_value") == 0) {
+			iFilterValue = value;
+		} else if (strcmp(name, "timestamp") == 0) {
+			bIncludeTimestamp = value;
+		} else if (strcmp(name, "log_std") == 0) {
+			bLogStdMsgs = value;
+		} else if (strcmp(name, "log_ext") == 0) {
+			bLogExtMsgs = value;
+		}
+	}
+
+	// configure CAN
+	brs = get_CAN_setBaudeRate(baud);
+
+	if (HAL_CAN_DeInit(&hcan) != HAL_OK) {
+		_Error_Handler(__FILE__, __LINE__);
+	}
+	hcan.Init.Prescaler = CAN_BitrateSettingsArray[brs].Prescaler;
+	hcan.Init.BS1 = CAN_BitrateSettingsArray[brs].BS1;
+	hcan.Init.BS2 = CAN_BitrateSettingsArray[brs].BS2;
+	if (ack) {
+		hcan.Init.Mode = CAN_MODE_NORMAL;
+	} else {
+		hcan.Init.Mode = CAN_MODE_SILENT;
+	}
+	if (HAL_CAN_Init(&hcan) != HAL_OK) {
+		_Error_Handler(__FILE__, __LINE__);
+	}
+
+	f_close(&file);
+
+	return res;
+}
+
+/**
+ * @brief Returns Prescaler, BS1 and BS2 settings for CAN calculated from bitrate
+ * @param bitrate
+ * @return CAN_BitrateSetting | default returns settings for 500 kbps
+ */
+int get_CAN_setBaudeRate(uint32_t bitrate) {
+	for (int var = 0; var < 8; ++var) {
+		if (bitrate == CAN_BitrateSettingsArray[var].bitrate) {
+			return var;
+		}
+	}
+	return 0;
+}
+
 /**
  * @brief System Clock Configuration
  * @retval None
  */
-void SystemClock_Config(void) {
+void SystemClock_Config(void)
+{
 
 	RCC_OscInitTypeDef RCC_OscInitStruct;
 	RCC_ClkInitTypeDef RCC_ClkInitStruct;
@@ -275,14 +378,17 @@ void SystemClock_Config(void) {
 
 	/**Initializes the CPU, AHB and APB busses clocks
 	 */
-	RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+	RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE
+			| RCC_OSCILLATORTYPE_LSE;
 	RCC_OscInitStruct.HSEState = RCC_HSE_ON;
 	RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+	RCC_OscInitStruct.LSEState = RCC_LSE_ON;
 	RCC_OscInitStruct.HSIState = RCC_HSI_ON;
 	RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
 	RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
 	RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
-	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
+	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+			{
 		_Error_Handler(__FILE__, __LINE__);
 	}
 
@@ -295,13 +401,16 @@ void SystemClock_Config(void) {
 	RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
 	RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) {
+	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+			{
 		_Error_Handler(__FILE__, __LINE__);
 	}
 
-	PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB;
+	PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC | RCC_PERIPHCLK_USB;
+	PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
 	PeriphClkInit.UsbClockSelection = RCC_USBCLKSOURCE_PLL_DIV1_5;
-	if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) {
+	if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+			{
 		_Error_Handler(__FILE__, __LINE__);
 	}
 
@@ -552,102 +661,9 @@ static void MX_GPIO_Init(void) {
 
 /* USER CODE END 4 */
 
-int iFilterMask = 0;
-int iFilterValue = 0;
-unsigned char bLogStdMsgs = 1;
-unsigned char bLogExtMsgs = 1;
-unsigned char bIncludeTimestamp = 1;
-
-int read_config_file() {
-	static FATFS g_sFatFs;
-	static FRESULT fresult;
-	FIL file;
-	int value;
-	char name[128];
-	int baud;
-	int res = 0;
-	int ack = 0;
-
-	iFilterMask = 0;
-	iFilterValue = 0;
-	bIncludeTimestamp = 1;
-	bLogStdMsgs = 1;
-	bLogExtMsgs = 1;
-
-	uint8_t brs;
-
-	fresult = f_mount(&g_sFatFs, "0:", 0);
-
-	//open file on SD card
-	fresult = f_open(&file, "0:Config.txt", FA_OPEN_EXISTING | FA_READ);
-	// if result is not FR_OK then there was an error opening
-	if (fresult != FR_OK)
-		return 0;
-
-	while (f_gets(sLine, STRLINE_LENGTH, &file)) {
-		if (sscanf(sLine, "%s %d", name, &value) == 0) {
-			continue;
-		}
-
-		if (strcmp(name, "baud") == 0) {
-			baud = value;
-			res = 1; // at least we got baudrate, config file accepted
-		} else if (strcmp(name, "ack_en") == 0) {
-			ack = value;
-		} else if (strcmp(name, "id_filter_mask") == 0) {
-			iFilterMask = value;
-		} else if (strcmp(name, "id_filter_value") == 0) {
-			iFilterValue = value;
-		} else if (strcmp(name, "timestamp") == 0) {
-			bIncludeTimestamp = value;
-		} else if (strcmp(name, "log_std") == 0) {
-			bLogStdMsgs = value;
-		} else if (strcmp(name, "log_ext") == 0) {
-			bLogExtMsgs = value;
-		}
-	}
-
-	// configure CAN
-	brs = get_CAN_setBaudeRate(baud);
-
-	if (HAL_CAN_DeInit(&hcan) != HAL_OK) {
-		_Error_Handler(__FILE__, __LINE__);
-	}
-	hcan.Init.Prescaler = CAN_BitrateSettingsArray[brs].Prescaler;
-	hcan.Init.BS1 = CAN_BitrateSettingsArray[brs].BS1;
-	hcan.Init.BS2 = CAN_BitrateSettingsArray[brs].BS2;
-	if (ack) {
-		hcan.Init.Mode = CAN_MODE_NORMAL;
-	} else {
-		hcan.Init.Mode = CAN_MODE_SILENT;
-	}
-	if (HAL_CAN_Init(&hcan) != HAL_OK) {
-		_Error_Handler(__FILE__, __LINE__);
-	}
-
-	fclose_(file);
-
-	return res;
-}
-
-/**
- * @brief Returns Prescaler, BS1 and BS2 settings for CAN calculated from bitrate
- * @param bitrate
- * @return CAN_BitrateSetting | default returns settings for 500 kbps
- */
-int get_CAN_setBaudeRate(uint32_t bitrate) {
-	for (int var = 0; var < 8; ++var) {
-		if (bitrate == CAN_BitrateSettingsArray[var].bitrate) {
-			return var;
-		}
-	}
-	return 0;
-}
-
 /* StartDefaultTask function */
 void StartDefaultTask(void const * argument) {
-	/* init code for FATFS */
-	MX_FATFS_Init();
+
 	/* USER CODE BEGIN 5 */
 	/* Infinite loop */
 	for (;;) {
