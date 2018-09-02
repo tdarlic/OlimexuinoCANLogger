@@ -10,7 +10,7 @@
 #include "ff.h"
 #include <stdbool.h>
 
-
+static FIL file_sdc;
 
 //extern bool_t fs_ready;
 
@@ -24,7 +24,7 @@ FIL * fopen_(const char * fileName, const char *mode)
 {
 	FRESULT fres;
 	BYTE attr = FA_READ;
-	FIL* File;
+	FIL* File = &file_sdc;
 
 	if (mode[0] == 'a')
 			{

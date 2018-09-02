@@ -115,8 +115,8 @@ const CAN_BitrateSetting CAN_BitrateSettingsArray[8] = {
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
 #define STRLINE_LENGTH 					1024
-#define SD_WRITE_BUFFER             	(1024*5)// 5k
-#define SD_WRITE_BUFFER_FLUSH_LIMIT 	(1024*4)// 4k
+#define SD_WRITE_BUFFER             	(1024*3)// 3k
+#define SD_WRITE_BUFFER_FLUSH_LIMIT 	(1024*2)// 2k
 #define MMCSD_BLOCK_SIZE 				512
 
 char sLine[STRLINE_LENGTH];
@@ -153,7 +153,9 @@ static void MX_SPI2_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_CAN_Init(void);
 static void MX_I2C2_Init(void);
+#ifdef USE_USB
 static void MX_USB_PCD_Init(void);
+#endif
 static void MX_RTC_Init(void);
 static void MX_CRC_Init(void);
 void StartDefaultTask(void const * argument);
@@ -164,6 +166,7 @@ static int align_buffer(void);
 static void copy_buffer(void);
 static void request_write(void);
 static void writeToSDBuffer(char *pString);
+void start_log(void);
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
@@ -207,7 +210,9 @@ int main(void) {
 	MX_USART1_UART_Init();
 	MX_CAN_Init();
 	MX_I2C2_Init();
+#ifdef USE_USB
 	MX_USB_PCD_Init();
+#endif
 	MX_RTC_Init();
 	MX_CRC_Init();
 
@@ -216,6 +221,7 @@ int main(void) {
 	MX_FATFS_Init();
 	mountSDCard();
 	read_config_file();
+	start_log();
 	/* USER CODE END 2 */
 
 	/* USER CODE BEGIN RTOS_MUTEX */
@@ -464,16 +470,15 @@ static int read_config_file(void) {
 /**
  * @brief Prepare file on SD card for writing to
  */
-void start_log()
+void start_log(void)
 {
 	RTC_TimeTypeDef timep;
-	RTC_DateTypeDef datep;
+	//RTC_DateTypeDef datep;
 	// open file and write the beginning of the load
 	HAL_RTC_GetTime(&hrtc, &timep, RTC_FORMAT_BIN);
-	HAL_RTC_GetDate(&hrtc, &datep, RTC_FORMAT_BIN);
+	//HAL_RTC_GetDate(&hrtc, &datep, RTC_FORMAT_BIN);
 	//rtcGetTime(&RTCD1, &timep);
-	sprintf(sLine, "%04d-%02d-%02dT%02d-%02d-%02dZ.csv", datep.Year + 1900,
-			datep.Month, datep.Date, timep.Hours, timep.Minutes, timep.Seconds); // making new file
+	sprintf(sLine, "0:%02d%02d%02d.csv", timep.Hours, timep.Minutes, timep.Seconds); // making new file
 
 	logfile = fopen_(sLine, "a");
 	if (bIncludeTimestamp)
@@ -483,7 +488,7 @@ void start_log()
 		strcpy(sLine, "ID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n");
 	writeToSDBuffer(sLine);
 	align_buffer();
-	fwrite_(sd_buffer, 1, sd_buffer_length, &logfile);
+	fwrite_(sd_buffer, 1, sd_buffer_length, logfile);
 	f_sync(logfile);
 
 	// reset buffer counters
@@ -667,6 +672,7 @@ static void MX_USART2_UART_Init(void) {
 
 }
 
+#ifdef USE_USB
 /* USB init function */
 static void MX_USB_PCD_Init(void) {
 
@@ -682,6 +688,7 @@ static void MX_USB_PCD_Init(void) {
 	}
 
 }
+#endif
 
 /* RTC init function */
 static void MX_RTC_Init(void) {
