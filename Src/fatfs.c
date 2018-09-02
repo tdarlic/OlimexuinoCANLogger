@@ -54,6 +54,7 @@ FATFS USERFatFS; /* File system object for USER logical drive */
 FIL USERFile; /* File object for USER */
 
 void disk_timerproc(void);
+inline void sdcard_systick_timerproc(void);
 
 /* USER CODE BEGIN Variables */
 volatile BYTE Timer1, Timer2; /* 100Hz decrement timer */
@@ -114,7 +115,7 @@ void disk_timerproc(void) {
 
 volatile unsigned short int sdcard_timer;
 
-inline void sdcard_systick_timerproc(void) {
+void sdcard_systick_timerproc(void) {
 	++sdcard_timer;
 	if (sdcard_timer >= 10) {
 		sdcard_timer = 0;

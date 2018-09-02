@@ -68,7 +68,7 @@ extern FIL USERFile; /* File object for USER */
 extern volatile BYTE Timer1, Timer2; /* 100Hz decrement timer */
 
 void MX_FATFS_Init(void);
-extern inline void sdcard_systick_timerproc(void);
+inline void sdcard_systick_timerproc(void);
 
 /* USER CODE BEGIN Prototypes */
 

@@ -435,7 +435,7 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
 
 }
 
-void HAL_PCD_MspInit(PCD_HandleTypeDef* hpcd)
+__weak void HAL_PCD_MspInit(PCD_HandleTypeDef* hpcd)
 {
 
   if(hpcd->Instance==USB)
@@ -452,7 +452,7 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef* hpcd)
 
 }
 
-void HAL_PCD_MspDeInit(PCD_HandleTypeDef* hpcd)
+__weak void HAL_PCD_MspDeInit(PCD_HandleTypeDef* hpcd)
 {
 
   if(hpcd->Instance==USB)

@@ -51,6 +51,11 @@
 #include "cmsis_os.h"
 #include <stdbool.h>
 #include "fatfs.h"
+#include <string.h>
+#include "file_utils.h"
+#ifdef USE_USB
+#include "usb_device.h"
+#endif
 
 /* USER CODE BEGIN Includes */
 
@@ -72,7 +77,7 @@ PCD_HandleTypeDef hpcd_USB_FS;
 
 osThreadId defaultTaskHandle;
 
-FATFS g_sFatFs;
+unsigned char bWriteFault = 0; // in case of overlap or write fault
 
 typedef struct CAN_BitrateSetting_t {
 	uint32_t bitrate;
@@ -109,8 +114,35 @@ const CAN_BitrateSetting CAN_BitrateSettingsArray[8] = {
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
-#define STRLINE_LENGTH 1024
+#define STRLINE_LENGTH 					1024
+#define SD_WRITE_BUFFER             	(1024*5)// 5k
+#define SD_WRITE_BUFFER_FLUSH_LIMIT 	(1024*4)// 4k
+#define MMCSD_BLOCK_SIZE 				512
+
 char sLine[STRLINE_LENGTH];
+
+FATFS g_sFatFs;
+FIL* logfile;
+
+uint32_t stLastWriting;
+
+unsigned char bLogging = 0; // if =1 than we logging to SD card
+
+int iFilterMask = 0;
+int iFilterValue = 0;
+unsigned char bLogStdMsgs = 1;
+unsigned char bLogExtMsgs = 1;
+unsigned char bIncludeTimestamp = 1;
+
+// buffer for collecting data to write
+char sd_buffer[SD_WRITE_BUFFER];
+WORD sd_buffer_length = 0;
+
+// buffer for storing ready to write data
+char sd_buffer_for_write[SD_WRITE_BUFFER];
+unsigned char bReqWrite = 0; // write request, the sd_buffer is being copied to sd_buffer_for_write
+WORD sd_buffer_length_for_write = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -126,8 +158,12 @@ static void MX_RTC_Init(void);
 static void MX_CRC_Init(void);
 void StartDefaultTask(void const * argument);
 void blinkThread(void const *argument);
-static FRESULT mountSDCard();
-int read_config_file();
+static FRESULT mountSDCard(void);
+static int read_config_file(void);
+static int align_buffer(void);
+static void copy_buffer(void);
+static void request_write(void);
+static void writeToSDBuffer(char *pString);
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
@@ -226,6 +262,8 @@ int main(void) {
 
 }
 
+/* USER CODE BEGIN 4 */
+
 void blinkThread(void const *argument) {
 	while (1) {
 		HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_1);
@@ -235,15 +273,88 @@ void blinkThread(void const *argument) {
 	osThreadTerminate(NULL);
 }
 
-static FRESULT mountSDCard() {
+static FRESULT mountSDCard(void) {
 	return f_mount(&g_sFatFs, "0:", 0);
 }
 
-/* USER CODE BEGIN 4 */
+// fill buffer with spaces (before \r\n) to make it 512 byte size
+// return 1 if filled and ready to write
+/**
+ * @brief Fill buffer with spaces (before \r\n) to make it 512 byte size
+ * @return 1 if filled and ready to write
+ */
+static int align_buffer(void)
+{
+	int i;
+	int len;
+
+	if (sd_buffer_length < 2)
+		return 0;
+	if (sd_buffer[sd_buffer_length - 2] != '\r')
+		return 0;
+	if (sd_buffer[sd_buffer_length - 1] != '\n')
+		return 0;
+
+	len = MMCSD_BLOCK_SIZE - (sd_buffer_length % MMCSD_BLOCK_SIZE);
+	for (i = 0; i < len; i++)
+		sd_buffer[sd_buffer_length + i - 2] = ' ';
+	sd_buffer[sd_buffer_length - 2] = ',';
+	sd_buffer[sd_buffer_length + len - 2] = '\r';
+	sd_buffer[sd_buffer_length + len - 1] = '\n';
+
+	sd_buffer_length += len;
+
+	return 1;
+}
+
+/**
+ * @brief copy input buffer into the buffer for flash writing data
+ */
+static void copy_buffer(void)
+{
+	// request write operation
+	memcpy(sd_buffer_for_write, sd_buffer, sd_buffer_length);
+	sd_buffer_length_for_write = sd_buffer_length;
+	sd_buffer_length = 0;
+}
+
+/**
+ * @brief Requests write
+ */
+static void request_write(void)
+{
+	if (bReqWrite)
+		bWriteFault = 1; // buffer overlapping
+
+	// request write operation
+	align_buffer();
+	copy_buffer();
+	bReqWrite = 1;
+}
+
+/**
+ * Writes string to SD write buffer
+ * @param pString
+ */
+static void writeToSDBuffer(char *pString)
+{
+	WORD length = strlen(pString);
+
+	// Add string
+	memcpy(&sd_buffer[sd_buffer_length], pString, length);
+	sd_buffer_length += length;
+
+	// Check flush limit
+	if (sd_buffer_length >= SD_WRITE_BUFFER_FLUSH_LIMIT)
+	{
+		request_write();
+	}
+}
+
 /**
  * @brief Test function used successfully to write to Sd card
  */
-void WriteToSD() {
+void WriteToSD(void) {
 	char buffer[128];
 
 	static FRESULT fresult;
@@ -274,13 +385,12 @@ void WriteToSD() {
 	fresult = f_close(&file);
 }
 
-int iFilterMask = 0;
-int iFilterValue = 0;
-unsigned char bLogStdMsgs = 1;
-unsigned char bLogExtMsgs = 1;
-unsigned char bIncludeTimestamp = 1;
-
-int read_config_file() {
+/**
+ * @brief Reads the configuration file and then loads the settings into the
+ * @brief CAN peripheral and restart it
+ * @return 0 on fault
+ */
+static int read_config_file(void) {
 	FRESULT fresult;
 	FIL file;
 	int value;
@@ -349,6 +459,42 @@ int read_config_file() {
 	f_close(&file);
 
 	return res;
+}
+
+/**
+ * @brief Prepare file on SD card for writing to
+ */
+void start_log()
+{
+	RTC_TimeTypeDef timep;
+	RTC_DateTypeDef datep;
+	// open file and write the beginning of the load
+	HAL_RTC_GetTime(&hrtc, &timep, RTC_FORMAT_BIN);
+	HAL_RTC_GetDate(&hrtc, &datep, RTC_FORMAT_BIN);
+	//rtcGetTime(&RTCD1, &timep);
+	sprintf(sLine, "%04d-%02d-%02dT%02d-%02d-%02dZ.csv", datep.Year + 1900,
+			datep.Month, datep.Date, timep.Hours, timep.Minutes, timep.Seconds); // making new file
+
+	logfile = fopen_(sLine, "a");
+	if (bIncludeTimestamp)
+		strcpy(sLine,
+				"Timestamp,ID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n");
+	else
+		strcpy(sLine, "ID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n");
+	writeToSDBuffer(sLine);
+	align_buffer();
+	fwrite_(sd_buffer, 1, sd_buffer_length, &logfile);
+	f_sync(logfile);
+
+	// reset buffer counters
+	sd_buffer_length_for_write = 0;
+	sd_buffer_length = 0;
+
+	bWriteFault = 0;
+
+	stLastWriting = HAL_GetTick(); // record time when we did write
+
+	bLogging = 1;
 }
 
 /**
@@ -665,6 +811,13 @@ static void MX_GPIO_Init(void) {
 void StartDefaultTask(void const * argument) {
 
 	/* USER CODE BEGIN 5 */
+	  /* init code for FATFS */
+	  //MX_FATFS_Init();
+
+	  /* init code for USB_DEVICE */
+#ifdef USE_USB
+	  MX_USB_DEVICE_Init();
+#endif
 	/* Infinite loop */
 	for (;;) {
 		sdcard_systick_timerproc();
