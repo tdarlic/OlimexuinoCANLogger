@@ -126,6 +126,8 @@ FIL* logfile;
 
 uint32_t stLastWriting;
 
+osSemaphoreId btnsemid;
+
 unsigned char bLogging = 0; // if =1 than we logging to SD card
 
 int iFilterMask = 0;
@@ -230,6 +232,9 @@ int main(void) {
 
 	/* USER CODE BEGIN RTOS_SEMAPHORES */
 	/* add semaphores, ... */
+	osSemaphoreDef(btnsem);
+	btnsemid = osSemaphoreCreate(osSemaphore(btnsem), 1);
+	osSemaphoreWait(btnsemid, osWaitForever);
 	/* USER CODE END RTOS_SEMAPHORES */
 
 	/* USER CODE BEGIN RTOS_TIMERS */
@@ -243,9 +248,10 @@ int main(void) {
 
 	/* USER CODE BEGIN RTOS_THREADS */
 	/* add threads, ... */
-	/* USER CODE END RTOS_THREADS */
 	osThreadDef(blink, blinkThread, osPriorityNormal, 0, 100);
 	blinkTID = osThreadCreate(osThread(blink), NULL);
+	/* USER CODE END RTOS_THREADS */
+
 	/* USER CODE BEGIN RTOS_QUEUES */
 	/* add queues, ... */
 	/* USER CODE END RTOS_QUEUES */
@@ -478,7 +484,8 @@ void start_log(void)
 	HAL_RTC_GetTime(&hrtc, &timep, RTC_FORMAT_BIN);
 	//HAL_RTC_GetDate(&hrtc, &datep, RTC_FORMAT_BIN);
 	//rtcGetTime(&RTCD1, &timep);
-	sprintf(sLine, "0:%02d%02d%02d.csv", timep.Hours, timep.Minutes, timep.Seconds); // making new file
+	sprintf(sLine, "0:%02d%02d%02d.csv", timep.Hours, timep.Minutes,
+			timep.Seconds); // making new file
 
 	logfile = fopen_(sLine, "a");
 	if (bIncludeTimestamp)
@@ -797,11 +804,11 @@ static void MX_GPIO_Init(void) {
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-	/*Configure GPIO pins : BUT_Pin USB_P_Pin */
-	GPIO_InitStruct.Pin = BUT_Pin | USB_P_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+	/*Configure GPIO pin : BUT_Pin */
+	GPIO_InitStruct.Pin = BUT_Pin;
+	GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+	HAL_GPIO_Init(BUT_GPIO_Port, &GPIO_InitStruct);
 
 	/*Configure GPIO pin : MMC_CS_Pin */
 	GPIO_InitStruct.Pin = MMC_CS_Pin;
@@ -809,6 +816,10 @@ static void MX_GPIO_Init(void) {
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(MMC_CS_GPIO_Port, &GPIO_InitStruct);
+
+	/* EXTI interrupt init*/
+	HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 
 }
 
@@ -818,12 +829,11 @@ static void MX_GPIO_Init(void) {
 void StartDefaultTask(void const * argument) {
 
 	/* USER CODE BEGIN 5 */
-	  /* init code for FATFS */
-	  //MX_FATFS_Init();
-
-	  /* init code for USB_DEVICE */
+	/* init code for FATFS */
+	//MX_FATFS_Init();
+	/* init code for USB_DEVICE */
 #ifdef USE_USB
-	  MX_USB_DEVICE_Init();
+	MX_USB_DEVICE_Init();
 #endif
 	/* Infinite loop */
 	for (;;) {
