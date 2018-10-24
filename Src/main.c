@@ -53,6 +53,7 @@
 #include "fatfs.h"
 #include <string.h>
 #include "file_utils.h"
+#include "stm32f1xx_it.h"
 #ifdef USE_USB
 #include "usb_device.h"
 #endif
@@ -76,6 +77,11 @@ UART_HandleTypeDef huart2;
 PCD_HandleTypeDef hpcd_USB_FS;
 
 osThreadId defaultTaskHandle;
+
+osThreadId blinkLed1TID;
+osThreadId blinkLed2TID;
+osThreadId logCANBusTID;
+osThreadId buttonDebounceTID;
 
 unsigned char bWriteFault = 0; // in case of overlap or write fault
 
@@ -130,6 +136,9 @@ osSemaphoreId btnsemid;
 
 unsigned char bLogging = 0; // if =1 than we logging to SD card
 
+// Signal to be sent to the LED1 thread when button is pressed
+const int32_t buttonPressed = 1;
+
 int iFilterMask = 0;
 int iFilterValue = 0;
 unsigned char bLogStdMsgs = 1;
@@ -161,7 +170,10 @@ static void MX_USB_PCD_Init(void);
 static void MX_RTC_Init(void);
 static void MX_CRC_Init(void);
 void StartDefaultTask(void const * argument);
-void blinkThread(void const *argument);
+void blinkLed1Thread(void const *argument);
+void blinkLed2Thread(void const *argument);
+void logCANBusThread(void const *argument);
+void buttonDebounceThread(void const *argument);
 static FRESULT mountSDCard(void);
 static int read_config_file(void);
 static int align_buffer(void);
@@ -186,7 +198,7 @@ void start_log(void);
  */
 int main(void) {
 	/* USER CODE BEGIN 1 */
-	osThreadId blinkTID;
+
 	/* USER CODE END 1 */
 
 	/* MCU Configuration----------------------------------------------------------*/
@@ -248,8 +260,16 @@ int main(void) {
 
 	/* USER CODE BEGIN RTOS_THREADS */
 	/* add threads, ... */
-	osThreadDef(blink, blinkThread, osPriorityNormal, 0, 100);
-	blinkTID = osThreadCreate(osThread(blink), NULL);
+	//osThreadDef(blinkLed1, blinkLed1Thread, osPriorityNormal, 0, 100);
+	//blinkLed1TID = osThreadCreate(osThread(blinkLed1), NULL);
+	osThreadDef(blinkLed2, blinkLed2Thread, osPriorityNormal, 0, 100);
+	blinkLed2TID = osThreadCreate(osThread(blinkLed2), NULL);
+
+	//osThreadDef(logCANBus, logCANBusThread, osPriorityNormal, 0, 100);
+	//logCANBusTID = osThreadCreate(osThread(logCANBus), NULL);
+
+	osThreadDef(buttonDebounce, buttonDebounceThread, osPriorityNormal, 0, 100);
+	buttonDebounceTID = osThreadCreate(osThread(buttonDebounce), NULL);
 	/* USER CODE END RTOS_THREADS */
 
 	/* USER CODE BEGIN RTOS_QUEUES */
@@ -276,11 +296,59 @@ int main(void) {
 
 /* USER CODE BEGIN 4 */
 
-void blinkThread(void const *argument) {
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+	if (GPIO_Pin == BUT_Pin) {
+		HAL_NVIC_DisableIRQ(EXTI9_5_IRQn);
+		osSignalSet(buttonDebounceTID, buttonPressed);
+		//Make sure that the values are wri
+		if (__HAL_GPIO_EXTI_GET_IT(BUT_Pin) != RESET)
+				{
+			__HAL_GPIO_EXTI_CLEAR_IT(BUT_Pin);
+		}
+		__DSB();
+	}
+}
+
+void buttonDebounceThread(void const *argument) {
+	GPIO_PinState ledState = GPIO_PIN_RESET;
+	uint8_t btnToggle = 1;
 	while (1) {
-		HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_1);
-		HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-		osDelay(500);
+		osSignalWait(buttonPressed, osWaitForever);
+		btnToggle = 1;
+		osDelay(200);
+		if (btnToggle) {
+			bLogging = !bLogging;
+			if (bLogging) {
+				ledState = GPIO_PIN_SET;
+			} else {
+				ledState = GPIO_PIN_RESET;
+			}
+			HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, ledState);
+		}
+		HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+	}
+	osThreadTerminate(NULL);
+}
+
+void blinkLed1Thread(void const *argument) {
+	while (1) {
+		//HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+		osDelay(1000);
+	}
+	osThreadTerminate(NULL);
+}
+
+void blinkLed2Thread(void const *argument) {
+	while (1) {
+		HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
+		osDelay(100);
+	}
+	osThreadTerminate(NULL);
+}
+
+void logCANBusThread(void const *argument) {
+	while (1) {
+
 	}
 	osThreadTerminate(NULL);
 }
