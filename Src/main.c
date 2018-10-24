@@ -298,13 +298,12 @@ int main(void) {
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 	if (GPIO_Pin == BUT_Pin) {
-		HAL_NVIC_DisableIRQ(EXTI9_5_IRQn);
 		osSignalSet(buttonDebounceTID, buttonPressed);
-		//Make sure that the values are wri
-		if (__HAL_GPIO_EXTI_GET_IT(BUT_Pin) != RESET)
-				{
-			__HAL_GPIO_EXTI_CLEAR_IT(BUT_Pin);
-		}
+		// Make sure that the values are written to the memory before exiting
+		// interrupt procedure because the memory command is still in the buffer
+		// and it maybe was not written to the memory yet so interrupt is still
+		// active
+		// http://www.keil.com/support/docs/3928.htm
 		__DSB();
 	}
 }
@@ -314,9 +313,8 @@ void buttonDebounceThread(void const *argument) {
 	uint8_t btnToggle = 1;
 	while (1) {
 		osSignalWait(buttonPressed, osWaitForever);
-		btnToggle = 1;
-		osDelay(200);
-		if (btnToggle) {
+		osDelay(100);
+		if (HAL_GPIO_ReadPin(BUT_GPIO_Port, BUT_Pin) == GPIO_PIN_SET) {
 			bLogging = !bLogging;
 			if (bLogging) {
 				ledState = GPIO_PIN_SET;
@@ -325,7 +323,6 @@ void buttonDebounceThread(void const *argument) {
 			}
 			HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, ledState);
 		}
-		HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 	}
 	osThreadTerminate(NULL);
 }
