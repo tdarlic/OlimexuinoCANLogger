@@ -139,6 +139,8 @@ unsigned char bLogging = 0; // if =1 than we logging to SD card
 // Signal to be sent to the LED1 thread when button is pressed
 const int32_t buttonPressed = 1;
 
+const int32_t canReceived = 2;
+
 int iFilterMask = 0;
 int iFilterValue = 0;
 unsigned char bLogStdMsgs = 1;
@@ -158,6 +160,7 @@ WORD sd_buffer_length_for_write = 0;
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
+static void MX_NVIC_Init(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_SPI2_Init(void);
@@ -180,7 +183,8 @@ static int align_buffer(void);
 static void copy_buffer(void);
 static void request_write(void);
 static void writeToSDBuffer(char *pString);
-void start_log(void);
+void startLog(void);
+void stopLog(void);
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
@@ -229,13 +233,14 @@ int main(void) {
 #endif
 	MX_RTC_Init();
 	MX_CRC_Init();
+	MX_NVIC_Init();
 
 	/* USER CODE BEGIN 2 */
+
 	/* init code for FATFS */
 	MX_FATFS_Init();
 	mountSDCard();
 	read_config_file();
-	start_log();
 	/* USER CODE END 2 */
 
 	/* USER CODE BEGIN RTOS_MUTEX */
@@ -276,6 +281,10 @@ int main(void) {
 	/* add queues, ... */
 	/* USER CODE END RTOS_QUEUES */
 	HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_1);
+
+	// start the CAN interrupt
+	HAL_CAN_Receive_IT(&hcan, CAN_FIFO0);
+
 	/* Start scheduler */
 	osKernelStart();
 
@@ -296,6 +305,10 @@ int main(void) {
 
 /* USER CODE BEGIN 4 */
 
+/**
+ * @brief GPIO button interrupt callback routine
+ * @param GPIO_Pin
+ */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 	if (GPIO_Pin == BUT_Pin) {
 		osSignalSet(buttonDebounceTID, buttonPressed);
@@ -308,9 +321,18 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 	}
 }
 
+/**
+ * @brief CAN interrupt callback routine
+ * @param hcan
+ */
+void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef* hcan) {
+	uint32_t num_bytes;
+	uint8_t buf[200];
+	static uint32_t time;
+}
+
 void buttonDebounceThread(void const *argument) {
 	GPIO_PinState ledState = GPIO_PIN_RESET;
-	uint8_t btnToggle = 1;
 	while (1) {
 		osSignalWait(buttonPressed, osWaitForever);
 		osDelay(100);
@@ -318,8 +340,10 @@ void buttonDebounceThread(void const *argument) {
 			bLogging = !bLogging;
 			if (bLogging) {
 				ledState = GPIO_PIN_SET;
+				startLog();
 			} else {
 				ledState = GPIO_PIN_RESET;
+				stopLog();
 			}
 			HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, ledState);
 		}
@@ -345,6 +369,7 @@ void blinkLed2Thread(void const *argument) {
 
 void logCANBusThread(void const *argument) {
 	while (1) {
+		osSignalWait(canReceived, osWaitForever);
 
 	}
 	osThreadTerminate(NULL);
@@ -539,9 +564,27 @@ static int read_config_file(void) {
 }
 
 /**
- * @brief Prepare file on SD card for writing to
+ * @brief Stops the logging and closes the file on disk
  */
-void start_log(void)
+void stopLog() {
+	fclose_(sLine);
+	// reset buffer counters
+	sd_buffer_length_for_write = 0;
+	sd_buffer_length = 0;
+
+	bWriteFault = 0;
+
+	stLastWriting = HAL_GetTick(); // record time when we did write
+
+	bLogging = 0;
+}
+
+/**
+ * @brief Prepare file on SD card for writing to and write header
+ * 		  after that set the bLogging variable to 1 so that the
+ *		  thread writing to SD continues to write
+ */
+void startLog(void)
 {
 	RTC_TimeTypeDef timep;
 	//RTC_DateTypeDef datep;
@@ -649,6 +692,20 @@ void SystemClock_Config(void)
 	HAL_NVIC_SetPriority(SysTick_IRQn, 15, 0);
 }
 
+/**
+ * @brief NVIC Configuration.
+ * @retval None
+ */
+static void MX_NVIC_Init(void)
+{
+	/* CAN1_RX1_IRQn interrupt configuration */
+	HAL_NVIC_SetPriority(CAN1_RX1_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(CAN1_RX1_IRQn);
+	/* EXTI9_5_IRQn interrupt configuration */
+	HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+}
+
 /* CAN init function */
 static void MX_CAN_Init(void) {
 
@@ -667,7 +724,6 @@ static void MX_CAN_Init(void) {
 	if (HAL_CAN_Init(&hcan) != HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
 	}
-
 }
 
 /* I2C2 init function */
@@ -881,10 +937,6 @@ static void MX_GPIO_Init(void) {
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(MMC_CS_GPIO_Port, &GPIO_InitStruct);
-
-	/* EXTI interrupt init*/
-	HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
-	HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 
 }
 
