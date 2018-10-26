@@ -132,13 +132,13 @@ FIL* logfile;
 
 uint32_t stLastWriting;
 
-osSemaphoreId btnsemid;
+osSemaphoreId canRcvLedSemId;
 
 unsigned char bLogging = 0; // if =1 than we logging to SD card
 
 // Signal to be sent to the LED1 thread when button is pressed
 const int32_t buttonPressed = 1;
-
+// Signal to be sent to the LED2 when CAN frame is received
 const int32_t canReceived = 2;
 
 int iFilterMask = 0;
@@ -155,6 +155,11 @@ WORD sd_buffer_length = 0;
 char sd_buffer_for_write[SD_WRITE_BUFFER];
 unsigned char bReqWrite = 0; // write request, the sd_buffer is being copied to sd_buffer_for_write
 WORD sd_buffer_length_for_write = 0;
+
+// Mail message queue for the CAN messages from interrupt to CAN logger
+// https://www.keil.com/pack/doc/cmsis/RTOS/html/group__CMSIS__RTOS__Mail.html
+osMailQDef(canMsgBox, 5, CanRxMsgTypeDef);
+osMailQId canMsgBox;
 
 /* USER CODE END PV */
 
@@ -183,6 +188,7 @@ static int align_buffer(void);
 static void copy_buffer(void);
 static void request_write(void);
 static void writeToSDBuffer(char *pString);
+void testWriteToSD(void);
 void startLog(void);
 void stopLog(void);
 
@@ -249,9 +255,9 @@ int main(void) {
 
 	/* USER CODE BEGIN RTOS_SEMAPHORES */
 	/* add semaphores, ... */
-	osSemaphoreDef(btnsem);
-	btnsemid = osSemaphoreCreate(osSemaphore(btnsem), 1);
-	osSemaphoreWait(btnsemid, osWaitForever);
+	//osSemaphoreDef(canRcvLedSem);
+	//canRcvLedSemId = osSemaphoreCreate(osSemaphore(canRcvLedSem), 1);
+	//osSemaphoreWait(canRcvLedSemId, osWaitForever);
 	/* USER CODE END RTOS_SEMAPHORES */
 
 	/* USER CODE BEGIN RTOS_TIMERS */
@@ -270,8 +276,8 @@ int main(void) {
 	osThreadDef(blinkLed2, blinkLed2Thread, osPriorityNormal, 0, 100);
 	blinkLed2TID = osThreadCreate(osThread(blinkLed2), NULL);
 
-	//osThreadDef(logCANBus, logCANBusThread, osPriorityNormal, 0, 100);
-	//logCANBusTID = osThreadCreate(osThread(logCANBus), NULL);
+	osThreadDef(logCANBus, logCANBusThread, osPriorityNormal, 0, 100);
+	logCANBusTID = osThreadCreate(osThread(logCANBus), NULL);
 
 	osThreadDef(buttonDebounce, buttonDebounceThread, osPriorityNormal, 0, 100);
 	buttonDebounceTID = osThreadCreate(osThread(buttonDebounce), NULL);
@@ -279,8 +285,9 @@ int main(void) {
 
 	/* USER CODE BEGIN RTOS_QUEUES */
 	/* add queues, ... */
+	canMsgBox = osMailCreate(osMailQ(canMsgBox), NULL);
 	/* USER CODE END RTOS_QUEUES */
-	HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_1);
+	HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
 
 	// start the CAN interrupt
 	HAL_CAN_Receive_IT(&hcan, CAN_FIFO0);
@@ -326,9 +333,18 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
  * @param hcan
  */
 void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef* hcan) {
-	uint32_t num_bytes;
-	uint8_t buf[200];
-	static uint32_t time;
+	CanRxMsgTypeDef *canMsg;
+	//CAN message received - put it in mail and sent to thread to write
+	// if not logging then return
+	if (!bLogging) {
+		return;
+	}
+	osSignalSet(blinkLed2TID, canReceived);
+	canMsg = (CanRxMsgTypeDef *) osMailCAlloc(canMsgBox, osWaitForever);
+	// copy values from CAN FIFO to canMsg so it is not overwritten
+	*canMsg = *hcan->pRxMsg;
+	osMailPut(canMsgBox, canMsg);
+	__DSB();
 }
 
 void buttonDebounceThread(void const *argument) {
@@ -353,27 +369,54 @@ void buttonDebounceThread(void const *argument) {
 
 void blinkLed1Thread(void const *argument) {
 	while (1) {
-		//HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+		HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
 		osDelay(1000);
 	}
 	osThreadTerminate(NULL);
 }
 
 void blinkLed2Thread(void const *argument) {
+	uint8_t i;
+
 	while (1) {
-		HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
-		osDelay(100);
+		osSignalWait(canReceived, osWaitForever);
+		for (i = 0; i < 12; ++i) {
+			HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
+			osDelay(70);
+		}
+		HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
 	}
 	osThreadTerminate(NULL);
 }
 
 void logCANBusThread(void const *argument) {
-	while (1) {
-		osSignalWait(canReceived, osWaitForever);
+	CanRxMsgTypeDef *canMsg;
+	uint8_t i;
+	char sTmp[128];
 
+	while (1) {
+		osEvent canEvent = osMailGet(canMsgBox, osWaitForever);
+		canMsg = (CanRxMsgTypeDef *) canEvent.value.p; // ".p" indicates that the message is a pointer
+		// message received do the magic and write to SD
+		// write down data
+		if (bIncludeTimestamp)
+			sprintf(sTmp, "%d,%X", osKernelSysTick(), canMsg->ExtId);
+		else
+			sprintf(sTmp, "%X", canMsg->ExtId);
+
+		for (i = 0; i < canMsg->DLC; i++)
+				{
+			sprintf(sTmp + strlen(sTmp), ",%02X", canMsg->Data[i]);
+		}
+
+		strcat(sTmp, "\r\n");
+		writeToSDBuffer(sTmp);
+		osMailFree(canMsgBox, canMsg);
 	}
 	osThreadTerminate(NULL);
 }
+
+//char createStrFrommCanMsg()
 
 static FRESULT mountSDCard(void) {
 	return f_mount(&g_sFatFs, "0:", 0);
@@ -456,12 +499,12 @@ static void writeToSDBuffer(char *pString)
 /**
  * @brief Test function used successfully to write to Sd card
  */
-void WriteToSD(void) {
+void testWriteToSD(void) {
 	char buffer[128];
 
 	static FRESULT fresult;
 	FIL file;
-	int len;
+
 	UINT bytes_written;
 
 	/* init code for FATFS */
@@ -478,7 +521,7 @@ void WriteToSD(void) {
 	}
 
 	//generate some string
-	len = sprintf(buffer, "Hello World!\r\n");
+	sprintf(buffer, "Hello World!\r\n");
 
 	//write data to the file
 	fresult = f_write(&file, buffer, 15, &bytes_written);
