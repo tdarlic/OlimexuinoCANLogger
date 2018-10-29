@@ -143,13 +143,13 @@ const int32_t canReceived = 2;
 
 int iFilterMask = 0;
 int iFilterValue = 0;
-unsigned char bLogStdMsgs = 1;
-unsigned char bLogExtMsgs = 1;
-unsigned char bIncludeTimestamp = 1;
+uint8_t bLogStdMsgs = 1;
+uint8_t bLogExtMsgs = 1;
+uint8_t bIncludeTimestamp = 1;
 
 // buffer for collecting data to write
 char sd_buffer[SD_WRITE_BUFFER];
-WORD sd_buffer_length = 0;
+uint16_t sd_buffer_length = 0;
 
 // buffer for storing ready to write data
 char sd_buffer_for_write[SD_WRITE_BUFFER];
@@ -287,10 +287,11 @@ int main(void) {
 	/* add queues, ... */
 	canMsgBox = osMailCreate(osMailQ(canMsgBox), NULL);
 	/* USER CODE END RTOS_QUEUES */
+
 	HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
 
 	// start the CAN interrupt
-	HAL_CAN_Receive_IT(&hcan, CAN_FIFO0);
+	//HAL_CAN_Receive_IT(&hcan, CAN_FIFO0);
 
 	/* Start scheduler */
 	osKernelStart();
@@ -540,7 +541,7 @@ static int read_config_file(void) {
 	FIL file;
 	int value;
 	char name[128];
-	int baud;
+	int baud = 500;
 	int res = 0;
 	int ack = 0;
 
@@ -550,7 +551,7 @@ static int read_config_file(void) {
 	bLogStdMsgs = 1;
 	bLogExtMsgs = 1;
 
-	uint8_t brs;
+	uint8_t brs = 0;
 
 	//fresult = f_mount(&g_sFatFs, "0:", 0);
 
@@ -575,16 +576,18 @@ static int read_config_file(void) {
 		} else if (strcmp(name, "id_filter_value") == 0) {
 			iFilterValue = value;
 		} else if (strcmp(name, "timestamp") == 0) {
-			bIncludeTimestamp = value;
+			bIncludeTimestamp = (uint8_t) value;
 		} else if (strcmp(name, "log_std") == 0) {
-			bLogStdMsgs = value;
+			bLogStdMsgs = (uint8_t) value;
 		} else if (strcmp(name, "log_ext") == 0) {
-			bLogExtMsgs = value;
+			bLogExtMsgs = (uint8_t) value;
 		}
 	}
 
 	// configure CAN
-	brs = get_CAN_setBaudeRate(baud);
+	brs = (uint8_t) get_CAN_setBaudeRate(baud);
+
+	HAL_NVIC_DisableIRQ(USB_LP_CAN1_RX0_IRQn);
 
 	if (HAL_CAN_DeInit(&hcan) != HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
@@ -597,9 +600,15 @@ static int read_config_file(void) {
 	} else {
 		hcan.Init.Mode = CAN_MODE_SILENT;
 	}
+
 	if (HAL_CAN_Init(&hcan) != HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
 	}
+
+	HAL_NVIC_SetPriority(USB_LP_CAN1_RX0_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
+	__HAL_CAN_CLEAR_FLAG(&hcan, CAN_IT_FMP0);
+	__HAL_CAN_ENABLE_IT(&hcan, CAN_IT_FMP0);
 
 	f_close(&file);
 
@@ -610,6 +619,7 @@ static int read_config_file(void) {
  * @brief Stops the logging and closes the file on disk
  */
 void stopLog() {
+	__HAL_CAN_DISABLE_IT(&hcan, CAN_IT_FMP0);
 	fclose_(sLine);
 	// reset buffer counters
 	sd_buffer_length_for_write = 0;
@@ -656,6 +666,9 @@ void startLog(void)
 	bWriteFault = 0;
 
 	stLastWriting = HAL_GetTick(); // record time when we did write
+
+	// setup CAN bus interrupt
+	__HAL_CAN_ENABLE_IT(&hcan, CAN_IT_FMP0);
 
 	bLogging = 1;
 }
@@ -742,22 +755,23 @@ void SystemClock_Config(void)
 static void MX_NVIC_Init(void)
 {
 	/* CAN1_RX1_IRQn interrupt configuration */
-	HAL_NVIC_SetPriority(CAN1_RX1_IRQn, 5, 0);
-	HAL_NVIC_EnableIRQ(CAN1_RX1_IRQn);
+	HAL_NVIC_SetPriority(USB_LP_CAN1_RX0_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
 	/* EXTI9_5_IRQn interrupt configuration */
 	HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
 	HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+
 }
 
 /* CAN init function */
 static void MX_CAN_Init(void) {
 
 	hcan.Instance = CAN1;
-	hcan.Init.Prescaler = 16;
+	hcan.Init.Prescaler = 9;
 	hcan.Init.Mode = CAN_MODE_NORMAL;
 	hcan.Init.SJW = CAN_SJW_1TQ;
-	hcan.Init.BS1 = CAN_BS1_1TQ;
-	hcan.Init.BS2 = CAN_BS2_1TQ;
+	hcan.Init.BS1 = CAN_BS1_13TQ;
+	hcan.Init.BS2 = CAN_BS2_2TQ;
 	hcan.Init.TTCM = DISABLE;
 	hcan.Init.ABOM = DISABLE;
 	hcan.Init.AWUM = DISABLE;
@@ -943,6 +957,9 @@ static void MX_GPIO_Init(void) {
 	__HAL_RCC_GPIOA_CLK_ENABLE()
 				;
 	__HAL_RCC_GPIOB_CLK_ENABLE()
+				;
+	// enable CAN clock
+	__HAL_RCC_CAN1_CLK_ENABLE()
 				;
 
 	/*Configure GPIO pin Output Level */
