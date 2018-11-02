@@ -64,7 +64,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 CAN_HandleTypeDef hcan;
-
+CanTxMsgTypeDef canTxMsg;
 CRC_HandleTypeDef hcrc;
 I2C_HandleTypeDef hi2c2;
 RTC_HandleTypeDef hrtc;
@@ -105,9 +105,9 @@ typedef struct CAN_BitrateSetting_t {
  * Type: bxCAN, Clock: 72MHz, max brp: 1024,
  * SP: 87.5%, min tq: 8, max tq: 25, FD factor: undefined, SJW: 1
  */
-const CAN_BitrateSetting CAN_BitrateSettingsArray[8] = {
+const CAN_BitrateSetting CAN_BitrateSettingsArray72[8] = {
 		//brp, pre, BS1, BS2
-		{ 500, 9, CAN_BS1_13TQ, CAN_BS2_2TQ },
+		{ 500, 2, CAN_BS1_13TQ, CAN_BS2_2TQ },
 		{ 250, 18, CAN_BS1_13TQ, CAN_BS2_2TQ },
 		{ 125, 36, CAN_BS1_13TQ, CAN_BS2_2TQ },
 		{ 100, 45, CAN_BS1_13TQ, CAN_BS2_2TQ },
@@ -116,6 +116,29 @@ const CAN_BitrateSetting CAN_BitrateSettingsArray[8] = {
 		{ 20, 225, CAN_BS1_13TQ, CAN_BS2_2TQ },
 		{ 10, 450, CAN_BS1_13TQ, CAN_BS2_2TQ }
 };
+
+/**
+ * Calculations taken from webpage:
+ * http://www.bittiming.can-wiki.info/
+ * With following settings
+ * Type: bxCAN, Clock: 36MHz, max brp: 1024,
+ * SP: 87.5%, min tq: 8, max tq: 25, FD factor: undefined, SJW: 1
+ */
+const CAN_BitrateSetting CAN_BitrateSettingsArray[8] = {
+		//brp, pre, BS1, BS2
+		{ 500, 9, CAN_BS1_6TQ, CAN_BS2_1TQ },
+		//{ 250, 18, CAN_BS1_13TQ, CAN_BS2_2TQ },
+		//http://old.ghielectronics.com/community/forum/topic?id=1504
+		//T1 = 15, T2 = 8 will give us 15 + 8 + 1 = 24 and this is what we need
+		{ 250, 6, CAN_BS1_15TQ, CAN_BS2_8TQ },
+		{ 125, 36, CAN_BS1_13TQ, CAN_BS2_2TQ },
+		{ 100, 45, CAN_BS1_15TQ, CAN_BS2_2TQ },
+		{ 83, 54, CAN_BS1_13TQ, CAN_BS2_2TQ },
+		{ 50, 90, CAN_BS1_13TQ, CAN_BS2_2TQ },
+		{ 20, 225, CAN_BS1_15TQ, CAN_BS2_2TQ },
+		{ 10, 450, CAN_BS1_13TQ, CAN_BS2_2TQ }
+};
+
 // @formatter:on
 
 /* USER CODE BEGIN PV */
@@ -177,6 +200,7 @@ static void MX_USB_PCD_Init(void);
 #endif
 static void MX_RTC_Init(void);
 static void MX_CRC_Init(void);
+void canTxMessage(void);
 void StartDefaultTask(void const * argument);
 void blinkLed1Thread(void const *argument);
 void blinkLed2Thread(void const *argument);
@@ -242,7 +266,7 @@ int main(void) {
 	MX_NVIC_Init();
 
 	/* USER CODE BEGIN 2 */
-
+	HAL_GPIO_WritePin(CAN_CTRL_GPIO_Port, CAN_CTRL_Pin, GPIO_PIN_RESET);
 	/* init code for FATFS */
 	MX_FATFS_Init();
 	mountSDCard();
@@ -290,9 +314,6 @@ int main(void) {
 
 	HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
 
-	// start the CAN interrupt
-	//HAL_CAN_Receive_IT(&hcan, CAN_FIFO0);
-
 	/* Start scheduler */
 	osKernelStart();
 
@@ -312,6 +333,24 @@ int main(void) {
 }
 
 /* USER CODE BEGIN 4 */
+
+void canTxMessage(void) {
+	uint8_t Data[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+	HAL_StatusTypeDef status;
+	canTxMsg.DLC = 1;
+	for (int var = 0; var < 8; ++var) {
+		canTxMsg.Data[var] = Data[var];
+	}
+	canTxMsg.DLC = 8;
+	canTxMsg.ExtId = 0x02;
+	canTxMsg.IDE = CAN_ID_STD;
+	canTxMsg.StdId = 0x01;
+	hcan.pTxMsg = &canTxMsg;
+	status = HAL_CAN_Transmit(&hcan, 100);
+	if (status == HAL_ERROR) {
+		_Error_Handler(__FILE__, __LINE__);
+	}
+}
 
 /**
  * @brief GPIO button interrupt callback routine
@@ -358,6 +397,7 @@ void buttonDebounceThread(void const *argument) {
 			if (bLogging) {
 				ledState = GPIO_PIN_SET;
 				startLog();
+				//canTxMessage();
 			} else {
 				ledState = GPIO_PIN_RESET;
 				stopLog();
@@ -583,6 +623,8 @@ static int read_config_file(void) {
 			bLogExtMsgs = (uint8_t) value;
 		}
 	}
+	// close SD file
+	f_close(&file);
 
 	// configure CAN
 	brs = (uint8_t) get_CAN_setBaudeRate(baud);
@@ -598,19 +640,24 @@ static int read_config_file(void) {
 	if (ack) {
 		hcan.Init.Mode = CAN_MODE_NORMAL;
 	} else {
-		hcan.Init.Mode = CAN_MODE_SILENT;
+		hcan.Init.Mode = CAN_MODE_NORMAL;//CAN_MODE_SILENT;
 	}
 
 	if (HAL_CAN_Init(&hcan) != HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
 	}
 
+	// start the CAN interrupt
+	HAL_CAN_Receive_IT(&hcan, CAN_FIFO0);
+
 	HAL_NVIC_SetPriority(USB_LP_CAN1_RX0_IRQn, 5, 0);
 	HAL_NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
+
+	HAL_NVIC_SetPriority(CAN1_RX1_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(CAN1_RX1_IRQn);
+
 	__HAL_CAN_CLEAR_FLAG(&hcan, CAN_IT_FMP0);
 	__HAL_CAN_ENABLE_IT(&hcan, CAN_IT_FMP0);
-
-	f_close(&file);
 
 	return res;
 }
@@ -755,6 +802,10 @@ void SystemClock_Config(void)
 static void MX_NVIC_Init(void)
 {
 	/* CAN1_RX1_IRQn interrupt configuration */
+	//CAN1_RX1_IRQn
+	HAL_NVIC_SetPriority(CAN1_RX1_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(CAN1_RX1_IRQn);
+
 	HAL_NVIC_SetPriority(USB_LP_CAN1_RX0_IRQn, 5, 0);
 	HAL_NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
 	/* EXTI9_5_IRQn interrupt configuration */
@@ -767,11 +818,11 @@ static void MX_NVIC_Init(void)
 static void MX_CAN_Init(void) {
 
 	hcan.Instance = CAN1;
-	hcan.Init.Prescaler = 9;
+	hcan.Init.Prescaler = 2;
 	hcan.Init.Mode = CAN_MODE_NORMAL;
 	hcan.Init.SJW = CAN_SJW_1TQ;
-	hcan.Init.BS1 = CAN_BS1_13TQ;
-	hcan.Init.BS2 = CAN_BS2_2TQ;
+	hcan.Init.BS1 = CAN_BS1_6TQ;
+	hcan.Init.BS2 = CAN_BS2_8TQ;
 	hcan.Init.TTCM = DISABLE;
 	hcan.Init.ABOM = DISABLE;
 	hcan.Init.AWUM = DISABLE;
@@ -781,6 +832,7 @@ static void MX_CAN_Init(void) {
 	if (HAL_CAN_Init(&hcan) != HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
 	}
+	__HAL_CAN_DBG_FREEZE(&hcan, DISABLE);
 }
 
 /* I2C2 init function */
