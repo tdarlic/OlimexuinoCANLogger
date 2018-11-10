@@ -73,9 +73,9 @@ SPI_HandleTypeDef hspi2;
 
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
-
+#ifdef USE_USB
 PCD_HandleTypeDef hpcd_USB_FS;
-
+#endif
 osThreadId defaultTaskHandle;
 
 osThreadId blinkLed1TID;
@@ -130,7 +130,7 @@ const CAN_BitrateSetting CAN_BitrateSettingsArray[8] = {
 		//{ 250, 18, CAN_BS1_13TQ, CAN_BS2_2TQ },
 		//http://old.ghielectronics.com/community/forum/topic?id=1504
 		//T1 = 15, T2 = 8 will give us 15 + 8 + 1 = 24 and this is what we need
-		{ 250, 6, CAN_BS1_15TQ, CAN_BS2_8TQ },
+		{ 250, 6, CAN_BS1_15TQ, CAN_BS2_8TQ }, //<-- operational
 		{ 125, 36, CAN_BS1_13TQ, CAN_BS2_2TQ },
 		{ 100, 45, CAN_BS1_15TQ, CAN_BS2_2TQ },
 		{ 83, 54, CAN_BS1_13TQ, CAN_BS2_2TQ },
@@ -206,6 +206,7 @@ void blinkLed1Thread(void const *argument);
 void blinkLed2Thread(void const *argument);
 void logCANBusThread(void const *argument);
 void buttonDebounceThread(void const *argument);
+int get_CAN_setBaudeRate(uint32_t bitrate);
 static FRESULT mountSDCard(void);
 static int read_config_file(void);
 static int align_buffer(void);
@@ -640,7 +641,7 @@ static int read_config_file(void) {
 	if (ack) {
 		hcan.Init.Mode = CAN_MODE_NORMAL;
 	} else {
-		hcan.Init.Mode = CAN_MODE_NORMAL;//CAN_MODE_SILENT;
+		hcan.Init.Mode = CAN_MODE_NORMAL; //CAN_MODE_SILENT;
 	}
 
 	if (HAL_CAN_Init(&hcan) != HAL_OK) {
@@ -817,6 +818,8 @@ static void MX_NVIC_Init(void)
 /* CAN init function */
 static void MX_CAN_Init(void) {
 
+	CAN_FilterConfTypeDef sFilterConfig;
+
 	hcan.Instance = CAN1;
 	hcan.Init.Prescaler = 2;
 	hcan.Init.Mode = CAN_MODE_NORMAL;
@@ -832,6 +835,24 @@ static void MX_CAN_Init(void) {
 	if (HAL_CAN_Init(&hcan) != HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
 	}
+
+	sFilterConfig.FilterNumber = 0;
+	sFilterConfig.FilterMode = CAN_FILTERMODE_IDMASK;
+	sFilterConfig.FilterScale = CAN_FILTERSCALE_32BIT;
+	sFilterConfig.FilterIdHigh = 0x0000;
+	sFilterConfig.FilterIdLow = 0x0000;
+	sFilterConfig.FilterMaskIdHigh = 0x0000;
+	sFilterConfig.FilterMaskIdLow = 0x0000;
+	sFilterConfig.FilterFIFOAssignment = 0;
+	sFilterConfig.FilterActivation = ENABLE;
+	sFilterConfig.BankNumber = 14;
+
+	if (HAL_CAN_ConfigFilter(&hcan, &sFilterConfig) != HAL_OK)
+			{
+		/* Filter configuration Error */
+		Error_Handler();
+	}
+
 	__HAL_CAN_DBG_FREEZE(&hcan, DISABLE);
 }
 
