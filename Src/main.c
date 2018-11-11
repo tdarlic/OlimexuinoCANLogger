@@ -63,7 +63,11 @@
 /* USER CODE END Includes */
 
 /* Private variables ---------------------------------------------------------*/
+// Definition of CAN interface and the messages
 CAN_HandleTypeDef hcan;
+CanRxMsgTypeDef hcanRxMsg1;
+CanRxMsgTypeDef hcanRxMsg2;
+
 CanTxMsgTypeDef canTxMsg;
 CRC_HandleTypeDef hcrc;
 I2C_HandleTypeDef hi2c2;
@@ -802,11 +806,6 @@ void SystemClock_Config(void)
  */
 static void MX_NVIC_Init(void)
 {
-	/* CAN1_RX1_IRQn interrupt configuration */
-	//CAN1_RX1_IRQn
-	HAL_NVIC_SetPriority(CAN1_RX1_IRQn, 5, 0);
-	HAL_NVIC_EnableIRQ(CAN1_RX1_IRQn);
-
 	HAL_NVIC_SetPriority(USB_LP_CAN1_RX0_IRQn, 5, 0);
 	HAL_NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
 	/* EXTI9_5_IRQn interrupt configuration */
@@ -819,6 +818,9 @@ static void MX_NVIC_Init(void)
 static void MX_CAN_Init(void) {
 
 	CAN_FilterConfTypeDef sFilterConfig;
+
+	hcan.pRxMsg = &hcanRxMsg1;
+	hcan.pRx1Msg = &hcanRxMsg2;
 
 	hcan.Instance = CAN1;
 	hcan.Init.Prescaler = 2;
