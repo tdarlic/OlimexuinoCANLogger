@@ -185,8 +185,7 @@ WORD sd_buffer_length_for_write = 0;
 
 // Mail message queue for the CAN messages from interrupt to CAN logger
 // https://www.keil.com/pack/doc/cmsis/RTOS/html/group__CMSIS__RTOS__Mail.html
-osMailQDef(canMsgBox, 5, CanRxMsgTypeDef);
-osMailQId canMsgBox;
+osMailQId canMsgBoxID;
 
 /* USER CODE END PV */
 
@@ -314,7 +313,8 @@ int main(void) {
 
 	/* USER CODE BEGIN RTOS_QUEUES */
 	/* add queues, ... */
-	canMsgBox = osMailCreate(osMailQ(canMsgBox), NULL);
+	osMailQDef(canMsgBox, 2, CanRxMsgTypeDef);
+	canMsgBoxID = osMailCreate(osMailQ(canMsgBox), NULL);
 	/* USER CODE END RTOS_QUEUES */
 
 	HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
@@ -385,10 +385,11 @@ void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef* hcan) {
 		return;
 	}
 	osSignalSet(blinkLed2TID, canReceived);
-	canMsg = (CanRxMsgTypeDef *) osMailCAlloc(canMsgBox, osWaitForever);
+	canMsg = (CanRxMsgTypeDef *) osMailAlloc(canMsgBoxID, osWaitForever);
 	// copy values from CAN FIFO to canMsg so it is not overwritten
 	*canMsg = *hcan->pRxMsg;
-	osMailPut(canMsgBox, canMsg);
+	osMailPut(canMsgBoxID, canMsg);
+	//make sure all memory access is completed before exiting this function
 	__DSB();
 }
 
@@ -441,7 +442,7 @@ void logCANBusThread(void const *argument) {
 	char sTmp[128];
 
 	while (1) {
-		osEvent canEvent = osMailGet(canMsgBox, osWaitForever);
+		osEvent canEvent = osMailGet(canMsgBoxID, osWaitForever);
 		canMsg = (CanRxMsgTypeDef *) canEvent.value.p; // ".p" indicates that the message is a pointer
 		// message received do the magic and write to SD
 		// write down data
@@ -457,7 +458,7 @@ void logCANBusThread(void const *argument) {
 
 		strcat(sTmp, "\r\n");
 		writeToSDBuffer(sTmp);
-		osMailFree(canMsgBox, canMsg);
+		osMailFree(canMsgBoxID, canMsg);
 	}
 	osThreadTerminate(NULL);
 }
