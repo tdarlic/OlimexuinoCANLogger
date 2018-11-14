@@ -1,2 +1,7 @@
 Debug/
 /Release/
+/CubeMX/Drivers/*
+/CubeMX/Inc/*
+/CubeMX/Middlewares/*
+/CubeMX/Src/*
+/CubeMX/.*
