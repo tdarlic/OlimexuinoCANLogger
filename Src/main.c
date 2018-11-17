@@ -46,6 +46,7 @@
  ******************************************************************************
  */
 /* Includes ------------------------------------------------------------------*/
+#include <stdio.h>
 #include "main.h"
 #include "stm32f1xx_hal.h"
 #include "cmsis_os.h"
@@ -220,6 +221,8 @@ static void writeToSDBuffer(char *pString);
 void testWriteToSD(void);
 void startLog(void);
 void stopLog(void);
+extern void initialise_monitor_handles(void); /* prototype */
+void threadsDump(void);
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
@@ -237,7 +240,6 @@ void stopLog(void);
  */
 int main(void) {
 	/* USER CODE BEGIN 1 */
-
 	/* USER CODE END 1 */
 
 	/* MCU Configuration----------------------------------------------------------*/
@@ -276,6 +278,10 @@ int main(void) {
 	MX_FATFS_Init();
 	mountSDCard();
 	read_config_file();
+	//enable semihosting
+	//https://mcuoneclipse.com/2014/09/11/semihosting-with-gnu-arm-embedded-launchpad-and-gnu-arm-eclipse-debug-plugins/
+	initialise_monitor_handles();
+	printf("Hello \r\n");
 	/* USER CODE END 2 */
 
 	/* USER CODE BEGIN RTOS_MUTEX */
@@ -295,7 +301,7 @@ int main(void) {
 
 	/* Create the thread(s) */
 	/* definition and creation of defaultTask */
-	osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
+	osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 256);
 	defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
 	/* USER CODE BEGIN RTOS_THREADS */
@@ -308,7 +314,7 @@ int main(void) {
 	osThreadDef(logCANBus, logCANBusThread, osPriorityNormal, 0, 256);
 	logCANBusTID = osThreadCreate(osThread(logCANBus), NULL);
 
-	osThreadDef(buttonDebounce, buttonDebounceThread, osPriorityNormal, 0, 128);
+	osThreadDef(buttonDebounce, buttonDebounceThread, osPriorityNormal, 0, 256);
 	buttonDebounceTID = osThreadCreate(osThread(buttonDebounce), NULL);
 	/* USER CODE END RTOS_THREADS */
 
@@ -340,6 +346,87 @@ int main(void) {
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+ * Dumping threads status, this is used only if debugging
+ */
+void threadsDump(void) {
+	TaskStatus_t *pxTaskStatusArray = NULL;
+	char *pcBuf = NULL;
+	char *pcStatus;
+
+	/* Allocate the message buffer. */
+	pcBuf = pvPortMalloc(100 * sizeof(char));
+
+	/* Allocate an array index for each task. */
+	pxTaskStatusArray = pvPortMalloc(
+			uxTaskGetNumberOfTasks() * sizeof(TaskStatus_t));
+
+	if (pcBuf != NULL && pxTaskStatusArray != NULL) {
+		/* Generate the (binary) data. */
+		uxTaskGetSystemState(pxTaskStatusArray, uxTaskGetNumberOfTasks(), NULL);
+
+		sprintf(pcBuf,
+				"         LIST OF RUNNING THREADS         \r\n-----------------------------------------\r\n");
+		printf(pcBuf);
+
+		for (uint16_t i = 0; i < uxTaskGetNumberOfTasks(); i++)
+				{
+			sprintf(pcBuf, "Thread: %s\r\n",
+					pxTaskStatusArray[i].pcTaskName);
+			printf(pcBuf);
+
+			sprintf(pcBuf, "Thread ID: %lu\r\n",
+					pxTaskStatusArray[i].xTaskNumber);
+			printf(pcBuf);
+
+			switch (pxTaskStatusArray[i].eCurrentState) {
+			case eReady:
+				pcStatus = "READY";
+				break;
+			case eBlocked:
+				pcStatus = "BLOCKED";
+				break;
+			case eSuspended:
+				pcStatus = "SUSPENDED";
+				break;
+			case eDeleted:
+				pcStatus = "DELETED";
+				break;
+
+			default: /* Should not get here, but it is included
+			 to prevent static checking errors. */
+				pcStatus = 0x00;
+				break;
+			}
+
+			sprintf(pcBuf, "\tStatus: %s\r\n", pcStatus);
+			printf(pcBuf);
+
+			sprintf(pcBuf, "\tStack watermark number: %d\r\n",
+					pxTaskStatusArray[i].usStackHighWaterMark);
+			printf(pcBuf);
+
+			sprintf(pcBuf, "\tPriority: %lu\r\n",
+					pxTaskStatusArray[i].uxCurrentPriority);
+			printf(pcBuf);
+
+			sprintf(pcBuf, "\tRun-time time: %lu\r\n",
+					pxTaskStatusArray[i].ulRunTimeCounter);
+			printf(pcBuf);
+
+			sprintf(pcBuf, "\tRun-time time in percentage: %lu\r\n",
+					pxTaskStatusArray[i].ulRunTimeCounter
+							/ portGET_RUN_TIME_COUNTER_VALUE() / 100);
+			printf(pcBuf);
+		}
+
+		vPortFree(pcBuf);
+		vPortFree(pxTaskStatusArray);
+	}
+
+	//osThreadTerminate(NULL);
+}
 
 void canTxMessage(void) {
 	uint8_t Data[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
@@ -387,16 +474,19 @@ void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef* hcan) {
 	if (!bLogging) {
 		return;
 	}
+
 	osSignalSet(blinkLed2TID, canReceived);
 	//canMsg = (CanRxMsgTypeDef *) osMailAlloc(canMsgBox, osWaitForever);
 	// copy values from CAN FIFO to canMsg so it is not overwritten
 	//*canMsg = *(hcan->pRxMsg);
 	canMsg = 0x1;
 	osMessagePut(canMsgBoxHandle, canMsg, osWaitForever);
+
 	//rearm the interrupt for CAN
 	__HAL_CAN_ENABLE_IT(hcan, CAN_IT_FMP0);
 	//make sure all memory access is completed before exiting this function
 	__DSB();
+
 }
 
 void buttonDebounceThread(void const *argument) {
@@ -416,6 +506,9 @@ void buttonDebounceThread(void const *argument) {
 			}
 			HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, ledState);
 		}
+#ifdef DEBUG
+		threadsDump();
+#endif
 	}
 	osThreadTerminate(NULL);
 }
@@ -476,7 +569,7 @@ void logCANBusThread(void const *argument) {
  * @param xTask
  * @param pcTaskName
  */
-void vApplicationStackOverflowHook( TaskHandle_t xTask, char *pcTaskName ){
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
 	asm("BKPT #0");
 }
 //char createStrFrommCanMsg()
