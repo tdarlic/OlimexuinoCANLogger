@@ -624,13 +624,25 @@ static void copy_buffer(void)
  */
 static void request_write(void)
 {
+	static FRESULT fresult;
+	uint32_t bytes_written;
+
 	if (bReqWrite)
 		bWriteFault = 1; // buffer overlapping
 
-	// request write operation
+	// carry out write operation
 	align_buffer();
 	copy_buffer();
-	bReqWrite = 1;
+
+	fresult = f_write(&logfile, sd_buffer_for_write, sd_buffer_length_for_write, &bytes_written);
+
+	if (fresult != FR_OK){
+		bWriteFault = 2;
+	}
+
+	if (f_sync(logfile) != FR_OK) {
+		bWriteFault = 2;
+	}
 }
 
 /**
