@@ -187,7 +187,7 @@ WORD sd_buffer_length_for_write = 0;
 // Mail message queue for the CAN messages from interrupt to CAN logger
 // Queue to hold 5 messages
 // https://www.keil.com/pack/doc/cmsis/RTOS/html/group__CMSIS__RTOS__Mail.html
-osMessageQId canMsgBoxHandle;
+osMailQId canMsgBoxHandle;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -281,7 +281,9 @@ int main(void) {
 	//enable semihosting
 	//https://mcuoneclipse.com/2014/09/11/semihosting-with-gnu-arm-embedded-launchpad-and-gnu-arm-eclipse-debug-plugins/
 	initialise_monitor_handles();
-	printf("Hello \r\n");
+#ifdef DEBUG
+	printf("SWO Debug out enabled \r\n");
+#endif
 	/* USER CODE END 2 */
 
 	/* USER CODE BEGIN RTOS_MUTEX */
@@ -321,8 +323,8 @@ int main(void) {
 	/* USER CODE BEGIN RTOS_QUEUES */
 	/* add queues, ... */
 	// Create mail queue for the CAN messages
-	osMessageQDef(canMsgBox, 5, uint32_t);
-	canMsgBoxHandle = osMessageCreate(osMessageQ(canMsgBox), NULL);
+	osMailQDef(canMsgBox, 5, CanRxMsgTypeDef);
+	canMsgBoxHandle = osMailCreate(osMailQ(canMsgBox), NULL);
 	/* USER CODE END RTOS_QUEUES */
 
 	HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
@@ -467,8 +469,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
  * @param hcan
  */
 void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef* hcan) {
-	//CanRxMsgTypeDef *canMsg;
-	uint32_t canMsg;
+	CanRxMsgTypeDef *canMsg;
+	//uint32_t canMsg;
 	//CAN message received - put it in mail and sent to thread to write
 	// if not logging then return
 	if (!bLogging) {
@@ -476,11 +478,11 @@ void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef* hcan) {
 	}
 
 	osSignalSet(blinkLed2TID, canReceived);
-	//canMsg = (CanRxMsgTypeDef *) osMailAlloc(canMsgBox, osWaitForever);
+	canMsg = (CanRxMsgTypeDef *) osMailAlloc(canMsgBoxHandle, osWaitForever);
 	// copy values from CAN FIFO to canMsg so it is not overwritten
-	//*canMsg = *(hcan->pRxMsg);
-	canMsg = 0x1;
-	osMessagePut(canMsgBoxHandle, canMsg, osWaitForever);
+	*canMsg = *(hcan->pRxMsg);
+
+	osMailPut(canMsgBoxHandle, canMsg);
 
 	//rearm the interrupt for CAN
 	__HAL_CAN_ENABLE_IT(hcan, CAN_IT_FMP0);
@@ -536,30 +538,28 @@ void blinkLed2Thread(void const *argument) {
 }
 
 void logCANBusThread(void const *argument) {
-	//CanRxMsgTypeDef *canMsg;
-	uint32_t canMsg;
+	CanRxMsgTypeDef *canMsg;
 	uint8_t i;
 	char sTmp[128];
 
 	while (1) {
-		osEvent canEvent = osMessageGet(canMsgBoxHandle, osWaitForever);
-		//canMsg = (CanRxMsgTypeDef *) canEvent.value.p; // ".p" indicates that the message is a pointer
-		canMsg = canEvent.value.v;
+		osEvent canEvent = osMailGet(canMsgBoxHandle, osWaitForever);
+		canMsg = (CanRxMsgTypeDef *) canEvent.value.p; // ".p" indicates that the message is a pointer
 		// message received do the magic and write to SD
 		// write down data
 		if (bIncludeTimestamp)
-			sprintf(sTmp, "%d,%X", osKernelSysTick(), canMsg/*->ExtId*/);
+			sprintf(sTmp, "%d,%X", osKernelSysTick(), canMsg->ExtId);
 		else
-			sprintf(sTmp, "%X", canMsg/*->ExtId*/);
+			sprintf(sTmp, "%X", canMsg->ExtId);
 
-		for (i = 0; i < canMsg/*->DLC*/; i++)
+		for (i = 0; i < canMsg->DLC; i++)
 				{
-			sprintf(sTmp + strlen(sTmp), ",%02X", canMsg/*->Data[i]*/);
+			sprintf(sTmp + strlen(sTmp), ",%02X", canMsg->Data[i]);
 		}
 
 		strcat(sTmp, "\r\n");
 		writeToSDBuffer(sTmp);
-		//osMailFree(canMsgBox, canMsg);
+		osMailFree(canMsgBoxHandle, canMsg);
 	}
 	osThreadTerminate(NULL);
 }
