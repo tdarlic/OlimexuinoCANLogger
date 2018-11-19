@@ -149,8 +149,8 @@ const CAN_BitrateSetting CAN_BitrateSettingsArray[8] = {
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
 #define STRLINE_LENGTH 					1024
-#define SD_WRITE_BUFFER             	(1024*3)// 3k
-#define SD_WRITE_BUFFER_FLUSH_LIMIT 	(1024*2)// 2k
+#define SD_WRITE_BUFFER             	(1024*2)// 3k
+#define SD_WRITE_BUFFER_FLUSH_LIMIT 	(1024*1)// 2k
 #define MMCSD_BLOCK_SIZE 				512
 
 char sLine[STRLINE_LENGTH];
@@ -274,10 +274,23 @@ int main(void) {
 
 	/* USER CODE BEGIN 2 */
 	HAL_GPIO_WritePin(CAN_CTRL_GPIO_Port, CAN_CTRL_Pin, GPIO_PIN_RESET);
+
+	//switch off all LEDS
+	HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
+
 	/* init code for FATFS */
 	MX_FATFS_Init();
 	mountSDCard();
-	read_config_file();
+	if (!read_config_file()) {
+		// config file was not read, just flash the led
+		for (;;) {
+			HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+			HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
+			HAL_Delay(30);
+		}
+	}
+
 	//enable semihosting
 	//https://mcuoneclipse.com/2014/09/11/semihosting-with-gnu-arm-embedded-launchpad-and-gnu-arm-eclipse-debug-plugins/
 	initialise_monitor_handles();
@@ -308,6 +321,8 @@ int main(void) {
 
 	/* USER CODE BEGIN RTOS_THREADS */
 	/* add threads, ... */
+
+	//Blink LED1 thread is not used
 	//osThreadDef(blinkLed1, blinkLed1Thread, osPriorityNormal, 0, 100);
 	//blinkLed1TID = osThreadCreate(osThread(blinkLed1), NULL);
 	osThreadDef(blinkLed2, blinkLed2Thread, osPriorityNormal, 0, 128);
@@ -326,8 +341,6 @@ int main(void) {
 	osMailQDef(canMsgBox, 5, CanRxMsgTypeDef);
 	canMsgBoxHandle = osMailCreate(osMailQ(canMsgBox), NULL);
 	/* USER CODE END RTOS_QUEUES */
-
-	HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
 
 	/* Start scheduler */
 	osKernelStart();
@@ -578,8 +591,6 @@ static FRESULT mountSDCard(void) {
 	return f_mount(&g_sFatFs, "0:", 0);
 }
 
-// fill buffer with spaces (before \r\n) to make it 512 byte size
-// return 1 if filled and ready to write
 /**
  * @brief Fill buffer with spaces (before \r\n) to make it 512 byte size
  * @return 1 if filled and ready to write
@@ -625,7 +636,7 @@ static void copy_buffer(void)
 static void request_write(void)
 {
 	static FRESULT fresult;
-	uint32_t bytes_written;
+	uint32_t bytes_written = 0;
 
 	if (bReqWrite)
 		bWriteFault = 1; // buffer overlapping
@@ -634,9 +645,12 @@ static void request_write(void)
 	align_buffer();
 	copy_buffer();
 
-	fresult = f_write(&logfile, sd_buffer_for_write, sd_buffer_length_for_write, &bytes_written);
+	//go to the end of the file
+	fresult = f_lseek(&logfile, logfile->fsize);
 
-	if (fresult != FR_OK){
+	bytes_written = fwrite_(sd_buffer_for_write, 1, sd_buffer_length_for_write - 1, logfile);
+
+	if (bytes_written != sd_buffer_length_for_write) {
 		bWriteFault = 2;
 	}
 
@@ -656,6 +670,9 @@ static void writeToSDBuffer(char *pString)
 	// Add string
 	memcpy(&sd_buffer[sd_buffer_length], pString, length);
 	sd_buffer_length += length;
+
+	// record time when we did write
+	stLastWriting = HAL_GetTick();
 
 	// Check flush limit
 	if (sd_buffer_length >= SD_WRITE_BUFFER_FLUSH_LIMIT)
@@ -725,8 +742,10 @@ static int read_config_file(void) {
 	//open file on SD card
 	fresult = f_open(&file, "0:Config.txt", FA_OPEN_EXISTING | FA_READ);
 	// if result is not FR_OK then there was an error opening
-	if (fresult != FR_OK)
+	if (fresult != FR_OK) {
 		return 0;
+		//todo: Add flashing LED or not turning LED on on error
+	}
 
 	while (f_gets(sLine, STRLINE_LENGTH, &file)) {
 		if (sscanf(sLine, "%s %d", name, &value) == 0) {
@@ -813,7 +832,14 @@ void stopLog() {
  */
 void startLog(void)
 {
+
 	RTC_TimeTypeDef timep;
+	// reset buffer counters
+	sd_buffer_length_for_write = 0;
+	sd_buffer_length = 0;
+
+	bWriteFault = 0;
+
 	//RTC_DateTypeDef datep;
 	// open file and write the beginning of the load
 	HAL_RTC_GetTime(&hrtc, &timep, RTC_FORMAT_BIN);
@@ -829,18 +855,9 @@ void startLog(void)
 	else
 		strcpy(sLine, "ID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n");
 	writeToSDBuffer(sLine);
-	align_buffer();
-	fwrite_(sd_buffer, 1, sd_buffer_length, logfile);
-	f_sync(logfile);
-
-	// reset buffer counters
-	sd_buffer_length_for_write = 0;
-	sd_buffer_length = 0;
-
-	bWriteFault = 0;
-
-	stLastWriting = HAL_GetTick(); // record time when we did write
-
+	//align_buffer();
+	//fwrite_(sd_buffer, 1, sd_buffer_length, logfile);
+	//f_sync(logfile);
 	// setup CAN bus interrupt
 	__HAL_CAN_ENABLE_IT(&hcan, CAN_IT_FMP0);
 
