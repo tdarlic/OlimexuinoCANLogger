@@ -560,11 +560,21 @@ void logCANBusThread(void const *argument) {
 		canMsg = (CanRxMsgTypeDef *) canEvent.value.p; // ".p" indicates that the message is a pointer
 		// message received do the magic and write to SD
 		// write down data
-		if (bIncludeTimestamp)
-			sprintf(sTmp, "%d,%X", osKernelSysTick(), canMsg->ExtId);
-		else
-			sprintf(sTmp, "%X", canMsg->ExtId);
-
+		if (bIncludeTimestamp) {
+			if (bLogExtMsgs) {
+				sprintf(sTmp, "%d,%X,%X", osKernelSysTick(), canMsg->ExtId,
+						canMsg->StdId);
+			} else {
+				sprintf(sTmp, "%d,%X", osKernelSysTick(), canMsg->StdId);
+			}
+		}
+		else {
+			if (bLogExtMsgs) {
+				sprintf(sTmp, "%X,%X", canMsg->ExtId, canMsg->StdId);
+			} else {
+				sprintf(sTmp, "%X", canMsg->StdId);
+			}
+		}
 		for (i = 0; i < canMsg->DLC; i++)
 				{
 			sprintf(sTmp + strlen(sTmp), ",%02X", canMsg->Data[i]);
@@ -817,6 +827,8 @@ static int read_config_file(void) {
  */
 void stopLog() {
 	__HAL_CAN_DISABLE_IT(&hcan, CAN_IT_FMP0);
+	// write the rest of the log on the SD card
+	request_write();
 	fclose_(sLine);
 	// reset buffer counters
 	sd_buffer_length_for_write = 0;
@@ -853,11 +865,24 @@ void startLog(void)
 			timep.Seconds); // making new file
 
 	logfile = fopen_(sLine, "w");
-	if (bIncludeTimestamp)
-		strcpy(sLine,
-				"Timestamp,ID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n");
-	else
-		strcpy(sLine, "ID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n");
+	if (bIncludeTimestamp) {
+		if (bLogExtMsgs) {
+			strcpy(sLine,
+					"Timestamp,EXTID,STDID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n");
+		} else {
+			strcpy(sLine,
+					"Timestamp,STDID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n");
+		}
+	}
+	else {
+		if (bLogExtMsgs) {
+			strcpy(sLine,
+					"EXTID,STDID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n");
+		} else {
+			strcpy(sLine,
+					"STDID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n");
+		}
+	}
 	writeToSDBuffer(sLine);
 	//align_buffer();
 	//fwrite_(sd_buffer, 1, sd_buffer_length, logfile);
