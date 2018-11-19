@@ -105,9 +105,9 @@ DRESULT USER_ioctl(BYTE pdrv, BYTE cmd, void *buff);
 #endif /* _USE_IOCTL == 1 */
 
 Diskio_drvTypeDef USER_Driver = { USER_initialize, USER_status, USER_read,
-#if  _USE_WRITE
+		#if  _USE_WRITE
 		USER_write,
-#endif  /* _USE_WRITE == 1 */  
+		#endif  /* _USE_WRITE == 1 */
 #if  _USE_IOCTL == 1
 		USER_ioctl,
 #endif /* _USE_IOCTL == 1 */
@@ -290,6 +290,11 @@ static bool xmit_datablock(const BYTE *buff, BYTE token) {
 		}
 		while (rcvr_spi() == 0)
 			;
+	}
+	// Next 3 lines are added so that the function would not return
+	// false on multiple sector writes
+	else {
+		return true;
 	}
 	if ((resp & 0x1F) == 0x05)
 		return true;
@@ -634,10 +639,5 @@ void *buff /* Buffer to send/receive control data */
 	/* USER CODE END IOCTL */
 }
 #endif /* _USE_IOCTL == 1 */
-
-
-
-
-
 
 /************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/

@@ -176,11 +176,11 @@ uint8_t bLogExtMsgs = 1;
 uint8_t bIncludeTimestamp = 1;
 
 // buffer for collecting data to write
-char sd_buffer[SD_WRITE_BUFFER];
+BYTE sd_buffer[SD_WRITE_BUFFER];
 uint16_t sd_buffer_length = 0;
 
 // buffer for storing ready to write data
-char sd_buffer_for_write[SD_WRITE_BUFFER];
+BYTE sd_buffer_for_write[SD_WRITE_BUFFER];
 unsigned char bReqWrite = 0; // write request, the sd_buffer is being copied to sd_buffer_for_write
 WORD sd_buffer_length_for_write = 0;
 
@@ -608,8 +608,9 @@ static int align_buffer(void)
 		return 0;
 
 	len = MMCSD_BLOCK_SIZE - (sd_buffer_length % MMCSD_BLOCK_SIZE);
-	for (i = 0; i < len; i++)
+	for (i = 0; i < len; i++) {
 		sd_buffer[sd_buffer_length + i - 2] = ' ';
+	}
 	sd_buffer[sd_buffer_length - 2] = ',';
 	sd_buffer[sd_buffer_length + len - 2] = '\r';
 	sd_buffer[sd_buffer_length + len - 1] = '\n';
@@ -645,10 +646,13 @@ static void request_write(void)
 	align_buffer();
 	copy_buffer();
 
-	//go to the end of the file
-	fresult = f_lseek(&logfile, logfile->fsize);
+	uint32_t blen = 1023;
 
-	bytes_written = fwrite_(sd_buffer_for_write, 1, sd_buffer_length_for_write - 1, logfile);
+	//go to the end of the file
+	//fresult = f_lseek(&logfile, logfile->fsize);
+
+	bytes_written = fwrite_(sd_buffer_for_write, 1, sd_buffer_length_for_write,
+			logfile);
 
 	if (bytes_written != sd_buffer_length_for_write) {
 		bWriteFault = 2;
@@ -848,7 +852,7 @@ void startLog(void)
 	sprintf(sLine, "0:%02d%02d%02d.csv", timep.Hours, timep.Minutes,
 			timep.Seconds); // making new file
 
-	logfile = fopen_(sLine, "a");
+	logfile = fopen_(sLine, "w");
 	if (bIncludeTimestamp)
 		strcpy(sLine,
 				"Timestamp,ID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n");
