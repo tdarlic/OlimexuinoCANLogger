@@ -117,7 +117,7 @@ const CAN_BitrateSetting CAN_BitrateSettingsArray[10] = {
 		{ 800, 3, CAN_BS1_12TQ, CAN_BS2_2TQ },
 		{ 500, 6, CAN_BS1_9TQ, CAN_BS2_2TQ }, //<-- tested
 		{ 250, 9, CAN_BS1_13TQ, CAN_BS2_2TQ }, //<-- tested
-		{ 125, 18, CAN_BS1_13TQ, CAN_BS2_2TQ },
+		{ 125, 18, CAN_BS1_13TQ, CAN_BS2_2TQ }, //<-- tested
 		{ 100, 18, CAN_BS1_16TQ, CAN_BS2_3TQ },
 		{ 83, 27, CAN_BS1_13TQ, CAN_BS2_2TQ },
 		{ 50, 45, CAN_BS1_13TQ, CAN_BS2_2TQ },
@@ -129,15 +129,17 @@ const CAN_BitrateSetting CAN_BitrateSettingsArray[10] = {
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
-#define STRLINE_LENGTH 					1024
-#define SD_WRITE_BUFFER             	(1024*2)// 3k
-#define SD_WRITE_BUFFER_FLUSH_LIMIT 	(1024*1)// 2k
+#define FILENAME_LENGTH 				64
+#define SD_WRITE_BUFFER             	(1024*1)
+#define SD_WRITE_BUFFER_FLUSH_LIMIT 	(512*1)
 #define MMCSD_BLOCK_SIZE 				512
 #define AUTOBAUDE_TIMEOUT				2000 //Autobaude timeout for each setting
 // macro for number of elements in array
 #define NELEMS(x)  (sizeof(x) / sizeof((x)[0]))
 
-char sLine[STRLINE_LENGTH];
+char logFileName[FILENAME_LENGTH];
+
+char strbuff[128];
 
 FATFS g_sFatFs;
 FIL* logfile;
@@ -210,6 +212,8 @@ void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef* hcan);
 void buttonDebounceThread(void const *argument);
 int get_CAN_setBaudeRate(uint32_t bitrate);
 int getCANBaudeRateArrayNo(uint32_t bitrate);
+void HAL_CAN_ErrorCallback(CAN_HandleTypeDef* rhcan);
+void writeAutobaudeToSD(void);
 void setCANBaudeRate(uint8_t brs);
 void setCANIRQ(void);
 static FRESULT mountSDCard(void);
@@ -218,7 +222,6 @@ static int align_buffer(void);
 static void copy_buffer(void);
 static void request_write(void);
 static void writeToSDBuffer(char *pString);
-void testWriteToSD(void);
 void startLog(void);
 void stopLog(void);
 extern void initialise_monitor_handles(void); /* prototype */
@@ -328,13 +331,13 @@ int main(void) {
 	osThreadDef(logCANBus, logCANBusThread, osPriorityNormal, 0, 256);
 	logCANBusTID = osThreadCreate(osThread(logCANBus), NULL);
 
-	osThreadDef(buttonDebounce, buttonDebounceThread, osPriorityNormal, 0, 256);
+	osThreadDef(buttonDebounce, buttonDebounceThread, osPriorityNormal, 0, 512);
 	buttonDebounceTID = osThreadCreate(osThread(buttonDebounce), NULL);
 
 	// in case that the autobaude has been selected in settings this thread will
 	// start with the higher priority
 	if (autobaude) {
-		osThreadDef(autobaudeCAN, autobaudeCANThread, osPriorityNormal, 0, 256);
+		osThreadDef(autobaudeCAN, autobaudeCANThread, osPriorityNormal, 0, 512);
 		autobaudeCANTID = osThreadCreate(osThread(autobaudeCAN), NULL);
 
 		osThreadDef(blinkLed1, blinkLed1Thread, osPriorityNormal, 0, 128);
@@ -528,6 +531,15 @@ void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef* rhcan) {
 
 }
 
+/**
+ * CAN Error callback function,
+ * @param hcan
+ */
+void HAL_CAN_ErrorCallback(CAN_HandleTypeDef* rhcan) {
+	__HAL_CAN_CLEAR_FLAG(&hcan, CAN_IT_FMP0);
+	__HAL_CAN_ENABLE_IT(&hcan, CAN_IT_FMP0);
+}
+
 void buttonDebounceThread(void const *argument) {
 	GPIO_PinState ledState = GPIO_PIN_RESET;
 	while (1) {
@@ -538,7 +550,6 @@ void buttonDebounceThread(void const *argument) {
 			if (bLogging) {
 				ledState = GPIO_PIN_SET;
 				startLog();
-				//canTxMessage();
 			} else {
 				ledState = GPIO_PIN_RESET;
 				stopLog();
@@ -645,6 +656,7 @@ void autobaudeCANThread(void const *argument) {
 			if (index > NELEMS(CAN_BitrateSettingsArray)) {
 				// autobauding failed
 				osSignalSet(autobaudeFail, blinkLed1TID);
+				HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
 				vTaskDelete(NULL);
 			}
 			//set up new bauderate
@@ -656,15 +668,14 @@ void autobaudeCANThread(void const *argument) {
 		if (event.status == osEventSignal) {
 			// delete task blinking LED1 and switch it off
 			//vTaskSuspendAll();
-			//vTaskDelete(blinkLed1TID);
-			vTaskSuspend(blinkLed1TID);
+			vTaskDelete(blinkLed1TID);
 			//xTaskResumeAll();
 			HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
-			// stop autobauding
+			//writeAutobaudeToSD();
+			//stop autobauding
 			autobaude = 0;
 			__HAL_CAN_ENABLE_IT(&hcan, CAN_IT_FMP0);
-			//vTaskDelete(NULL);
-			vTaskSuspend(NULL);
+			vTaskDelete(NULL);
 		}
 	}
 	osThreadTerminate(NULL);
@@ -739,7 +750,7 @@ static void request_write(void)
 	copy_buffer();
 
 	//go to the end of the file
-	//fresult = f_lseek(&logfile, logfile->fsize);
+	f_lseek(&logfile, logfile->fsize);
 
 	bytes_written = fwrite_(sd_buffer_for_write, 1, sd_buffer_length_for_write,
 			logfile);
@@ -776,37 +787,29 @@ static void writeToSDBuffer(char *pString)
 }
 
 /**
- * @brief Test function used successfully to write to Sd card
+ * @brief Write autobaude value to a file on SD
  */
-void testWriteToSD(void) {
-	char buffer[128];
-
+void writeAutobaudeToSD(void) {
+	char buffer[40];
 	static FRESULT fresult;
-	FIL file;
-
+	FIL* file;
 	UINT bytes_written;
 
-	/* init code for FATFS */
-	//MX_FATFS_Init();
-	//mount SD card
-	fresult = f_mount(&g_sFatFs, "0:", 0);
-
 	//open file on SD card
-	fresult = f_open(&file, "0:file.txt", FA_OPEN_ALWAYS | FA_WRITE);
-
-	if (fresult == FR_OK) {
-		//go to the end of the file
-		fresult = f_lseek(&file, file.fsize);
+	file = fopen_("0:abaude.txt", "w");
+	if (fresult != FR_OK) {
+		//error
+		return;
 	}
 
 	//generate some string
-	sprintf(buffer, "Hello World!\r\n");
-
-	//write data to the file
-	fresult = f_write(&file, buffer, 15, &bytes_written);
-
-	//close file
-	fresult = f_close(&file);
+	sprintf(buffer, "Autobaude: %d\r\n", baud);
+	bytes_written = fwrite_(buffer, 1, strlen(buffer), file);
+	if (bytes_written != strlen(buffer)) {
+		fclose_(file);
+	}
+	f_sync(file);
+	fclose_(file);
 }
 
 void setCANBaudeRate(uint8_t brs) {
@@ -843,6 +846,7 @@ void setCANIRQ(void) {
  */
 static int read_config_file(void) {
 	FRESULT fresult;
+	char sLine[128];
 	FIL file;
 	int value;
 	char name[128];
@@ -867,14 +871,14 @@ static int read_config_file(void) {
 		//todo: Add flashing LED or not turning LED on on error
 	}
 
-	while (f_gets(sLine, STRLINE_LENGTH, &file)) {
+	while (f_gets(sLine, 128, &file)) {
 		if (sscanf(sLine, "%s %d", name, &value) == 0) {
 			continue;
 		}
 
 		if (strcmp(name, "baud") == 0) {
 			// if baude value is 0 then enter into autobaude mode
-			if (1/*value == 0*/) {
+			if (value == 0) {
 				autobaude = 1;
 				wasAutobauding = 1;
 				// start with the highest value
@@ -923,7 +927,7 @@ void stopLog() {
 	__HAL_CAN_CLEAR_FLAG(&hcan, CAN_IT_FMP0);
 	// write the rest of the log on the SD card
 	request_write();
-	fclose_(sLine);
+	fclose_(logFileName);
 	// reset buffer counters
 	sd_buffer_length_for_write = 0;
 	sd_buffer_length = 0;
@@ -933,6 +937,8 @@ void stopLog() {
 	stLastWriting = HAL_GetTick(); // record time when we did write
 
 	bLogging = 0;
+
+	__HAL_CAN_ENABLE_IT(&hcan, CAN_IT_FMP0);
 }
 
 /**
@@ -950,37 +956,29 @@ void startLog(void)
 
 	bWriteFault = 0;
 
+	char ts[] = "Timestamp,";
+	char ex[] = "EXTID,STDID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n";
+	char sd[] = "STDID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n";
+
 	//RTC_DateTypeDef datep;
 	// open file and write the beginning of the load
 	HAL_RTC_GetTime(&hrtc, &timep, RTC_FORMAT_BIN);
 	//HAL_RTC_GetDate(&hrtc, &datep, RTC_FORMAT_BIN);
 	//rtcGetTime(&RTCD1, &timep);
-	sprintf(sLine, "0:%02d%02d%02d.csv", timep.Hours, timep.Minutes,
+	sprintf(logFileName, "0:%02d%02d%02d.csv", timep.Hours, timep.Minutes,
 			timep.Seconds); // making new file
 
-	logfile = fopen_(sLine, "w");
+	logfile = fopen_(logFileName, "w");
+	//f_lseek(&logfile, logfile->fsize);
 	if (bIncludeTimestamp) {
-		if (bLogExtMsgs) {
-			strcpy(sLine,
-					"Timestamp,EXTID,STDID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n");
-		} else {
-			strcpy(sLine,
-					"Timestamp,STDID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n");
-		}
+		writeToSDBuffer(ts);
 	}
-	else {
-		if (bLogExtMsgs) {
-			strcpy(sLine,
-					"EXTID,STDID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n");
-		} else {
-			strcpy(sLine,
-					"STDID,Data0,Data1,Data2,Data3,Data4,Data5,Data6,Data7\r\n");
-		}
+	if (bLogExtMsgs) {
+		writeToSDBuffer(ex);
+	} else {
+		writeToSDBuffer(sd);
 	}
-	writeToSDBuffer(sLine);
-	//align_buffer();
-	//fwrite_(sd_buffer, 1, sd_buffer_length, logfile);
-	//f_sync(logfile);
+
 	// setup CAN bus interrupt
 	__HAL_CAN_ENABLE_IT(&hcan, CAN_IT_FMP0);
 

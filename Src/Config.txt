@@ -1,4 +1,4 @@
-baud 250
+baud 0
 ack_en 0
 id_filter_mask 0
 id_filter_value 10
