@@ -87,6 +87,7 @@ osThreadId blinkLed1TID;
 osThreadId blinkLed2TID;
 osThreadId logCANBusTID;
 osThreadId buttonDebounceTID;
+osThreadId autobaudeCANTID;
 
 unsigned char bWriteFault = 0; // in case of overlap or write fault
 
@@ -107,41 +108,21 @@ typedef struct CAN_BitrateSetting_t {
  * Calculations taken from webpage:
  * http://www.bittiming.can-wiki.info/
  * With following settings
- * Type: bxCAN, Clock: 72MHz, max brp: 1024,
- * SP: 87.5%, min tq: 8, max tq: 25, FD factor: undefined, SJW: 1
- */
-const CAN_BitrateSetting CAN_BitrateSettingsArray72[8] = {
-		//brp, pre, BS1, BS2
-		{ 500, 2, CAN_BS1_13TQ, CAN_BS2_2TQ },
-		{ 250, 18, CAN_BS1_13TQ, CAN_BS2_2TQ },
-		{ 125, 36, CAN_BS1_13TQ, CAN_BS2_2TQ },
-		{ 100, 45, CAN_BS1_13TQ, CAN_BS2_2TQ },
-		{ 83, 54, CAN_BS1_13TQ, CAN_BS2_2TQ },
-		{ 50, 90, CAN_BS1_13TQ, CAN_BS2_2TQ },
-		{ 20, 225, CAN_BS1_13TQ, CAN_BS2_2TQ },
-		{ 10, 450, CAN_BS1_13TQ, CAN_BS2_2TQ }
-};
-
-/**
- * Calculations taken from webpage:
- * http://www.bittiming.can-wiki.info/
- * With following settings
  * Type: bxCAN, Clock: 36MHz, max brp: 1024,
  * SP: 87.5%, min tq: 8, max tq: 25, FD factor: undefined, SJW: 1
  */
-const CAN_BitrateSetting CAN_BitrateSettingsArray[8] = {
+const CAN_BitrateSetting CAN_BitrateSettingsArray[10] = {
 		//brp, pre, BS1, BS2
-		{ 500, 9, CAN_BS1_6TQ, CAN_BS2_1TQ },
-		//{ 250, 18, CAN_BS1_13TQ, CAN_BS2_2TQ },
-		//http://old.ghielectronics.com/community/forum/topic?id=1504
-		//T1 = 15, T2 = 8 will give us 15 + 8 + 1 = 24 and this is what we need
-		{ 250, 6, CAN_BS1_15TQ, CAN_BS2_8TQ }, //<-- operational
-		{ 125, 36, CAN_BS1_13TQ, CAN_BS2_2TQ },
-		{ 100, 45, CAN_BS1_15TQ, CAN_BS2_2TQ },
-		{ 83, 54, CAN_BS1_13TQ, CAN_BS2_2TQ },
-		{ 50, 90, CAN_BS1_13TQ, CAN_BS2_2TQ },
-		{ 20, 225, CAN_BS1_15TQ, CAN_BS2_2TQ },
-		{ 10, 450, CAN_BS1_13TQ, CAN_BS2_2TQ }
+		{ 1000, 3, CAN_BS1_9TQ, CAN_BS2_2TQ },
+		{ 800, 3, CAN_BS1_12TQ, CAN_BS2_2TQ },
+		{ 500, 6, CAN_BS1_9TQ, CAN_BS2_2TQ }, //<-- tested
+		{ 250, 9, CAN_BS1_13TQ, CAN_BS2_2TQ }, //<-- tested
+		{ 125, 18, CAN_BS1_13TQ, CAN_BS2_2TQ },
+		{ 100, 18, CAN_BS1_16TQ, CAN_BS2_3TQ },
+		{ 83, 27, CAN_BS1_13TQ, CAN_BS2_2TQ },
+		{ 50, 45, CAN_BS1_13TQ, CAN_BS2_2TQ },
+		{ 20, 90, CAN_BS1_16TQ, CAN_BS2_3TQ },
+		{ 10, 225, CAN_BS1_13TQ, CAN_BS2_2TQ }
 };
 
 // @formatter:on
@@ -152,6 +133,9 @@ const CAN_BitrateSetting CAN_BitrateSettingsArray[8] = {
 #define SD_WRITE_BUFFER             	(1024*2)// 3k
 #define SD_WRITE_BUFFER_FLUSH_LIMIT 	(1024*1)// 2k
 #define MMCSD_BLOCK_SIZE 				512
+#define AUTOBAUDE_TIMEOUT				2000 //Autobaude timeout for each setting
+// macro for number of elements in array
+#define NELEMS(x)  (sizeof(x) / sizeof((x)[0]))
 
 char sLine[STRLINE_LENGTH];
 
@@ -162,12 +146,24 @@ uint32_t stLastWriting;
 
 osSemaphoreId canRcvLedSemId;
 
+// When set to 1 device will attempt to autobaude on start
+unsigned char autobaude = 0;
+
+// in case that the device was autobauding then autobaude setting will be
+// written to log file
+unsigned char wasAutobauding = 0;
+
+// global variable for bauderate
+int baud = 1000;
+
 unsigned char bLogging = 0; // if =1 than we logging to SD card
 
 // Signal to be sent to the LED1 thread when button is pressed
 const int32_t buttonPressed = 1;
 // Signal to be sent to the LED2 when CAN frame is received
 const int32_t canReceived = 2;
+// Signal to signify that the autobaude has failed
+const int32_t autobaudeFail = 3;
 
 int iFilterMask = 0;
 int iFilterValue = 0;
@@ -209,9 +205,13 @@ void StartDefaultTask(void const * argument);
 void blinkLed1Thread(void const *argument);
 void blinkLed2Thread(void const *argument);
 void logCANBusThread(void const *argument);
+void autobaudeCANThread(void const *argument);
 void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef* hcan);
 void buttonDebounceThread(void const *argument);
 int get_CAN_setBaudeRate(uint32_t bitrate);
+int getCANBaudeRateArrayNo(uint32_t bitrate);
+void setCANBaudeRate(uint8_t brs);
+void setCANIRQ(void);
 static FRESULT mountSDCard(void);
 static int read_config_file(void);
 static int align_buffer(void);
@@ -284,7 +284,7 @@ int main(void) {
 	mountSDCard();
 	if (!read_config_file()) {
 		// config file was not read, just flash the led
-		for (;;) {
+		while (1) {
 			HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
 			HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
 			HAL_Delay(30);
@@ -322,9 +322,6 @@ int main(void) {
 	/* USER CODE BEGIN RTOS_THREADS */
 	/* add threads, ... */
 
-	//Blink LED1 thread is not used
-	//osThreadDef(blinkLed1, blinkLed1Thread, osPriorityNormal, 0, 100);
-	//blinkLed1TID = osThreadCreate(osThread(blinkLed1), NULL);
 	osThreadDef(blinkLed2, blinkLed2Thread, osPriorityNormal, 0, 128);
 	blinkLed2TID = osThreadCreate(osThread(blinkLed2), NULL);
 
@@ -333,6 +330,16 @@ int main(void) {
 
 	osThreadDef(buttonDebounce, buttonDebounceThread, osPriorityNormal, 0, 256);
 	buttonDebounceTID = osThreadCreate(osThread(buttonDebounce), NULL);
+
+	// in case that the autobaude has been selected in settings this thread will
+	// start with the higher priority
+	if (autobaude) {
+		osThreadDef(autobaudeCAN, autobaudeCANThread, osPriorityNormal, 0, 256);
+		autobaudeCANTID = osThreadCreate(osThread(autobaudeCAN), NULL);
+
+		osThreadDef(blinkLed1, blinkLed1Thread, osPriorityNormal, 0, 128);
+		blinkLed1TID = osThreadCreate(osThread(blinkLed1), NULL);
+	}
 	/* USER CODE END RTOS_THREADS */
 
 	/* USER CODE BEGIN RTOS_QUEUES */
@@ -363,7 +370,7 @@ int main(void) {
 /* USER CODE BEGIN 4 */
 
 /**
- * Dumping threads status, this is used only if debugging
+ * Dumping threads status to SWO, this is used only if debugging
  */
 void threadsDump(void) {
 	TaskStatus_t *pxTaskStatusArray = NULL;
@@ -443,6 +450,10 @@ void threadsDump(void) {
 	//osThreadTerminate(NULL);
 }
 
+/**
+ * Debug function to check whether TX functionality is operational
+ * and maybe check proper timing and so with the scope or logic analyzer
+ */
 void canTxMessage(void) {
 	uint8_t Data[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
 	HAL_StatusTypeDef status;
@@ -467,6 +478,10 @@ void canTxMessage(void) {
  */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 	if (GPIO_Pin == BUT_Pin) {
+		// if autobauding return from interrupt immediately
+		if (autobaude) {
+			return;
+		}
 		osSignalSet(buttonDebounceTID, buttonPressed);
 		// Make sure that the values are written to the memory before exiting
 		// interrupt procedure because the memory command is still in the buffer
@@ -481,24 +496,33 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
  * @brief CAN interrupt callback routine
  * @param hcan
  */
-void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef* hcan) {
+void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef* rhcan) {
 	CanRxMsgTypeDef *canMsg;
 	//uint32_t canMsg;
 	//CAN message received - put it in mail and sent to thread to write
-	// if not logging then return
-	if (!bLogging) {
-		return;
-	}
 
 	osSignalSet(blinkLed2TID, canReceived);
+	if (autobaude) {
+		// if autobauding then send
+		osSignalSet(autobaudeCANTID, canReceived);
+		__HAL_CAN_ENABLE_IT(&hcan, CAN_IT_FMP0);
+	}
+	// if not logging then return
+	if (!bLogging) {
+		//rearm the interrupt for CAN
+		__HAL_CAN_CLEAR_FLAG(&hcan, CAN_IT_FMP0);
+		__HAL_CAN_ENABLE_IT(&hcan, CAN_IT_FMP0);
+		return;
+	}
 	canMsg = (CanRxMsgTypeDef *) osMailAlloc(canMsgBoxHandle, osWaitForever);
 	// copy values from CAN FIFO to canMsg so it is not overwritten
-	*canMsg = *(hcan->pRxMsg);
+	*canMsg = *(rhcan->pRxMsg);
 
 	osMailPut(canMsgBoxHandle, canMsg);
 
 	//rearm the interrupt for CAN
-	__HAL_CAN_ENABLE_IT(hcan, CAN_IT_FMP0);
+	__HAL_CAN_CLEAR_FLAG(&hcan, CAN_IT_FMP0);
+	__HAL_CAN_ENABLE_IT(&hcan, CAN_IT_FMP0);
 	//make sure all memory access is completed before exiting this function
 	__DSB();
 
@@ -529,9 +553,19 @@ void buttonDebounceThread(void const *argument) {
 }
 
 void blinkLed1Thread(void const *argument) {
+	osEvent event;
 	while (1) {
-		HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
-		osDelay(1000);
+		// flash slowly
+		HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET);
+		osDelay(500);
+		HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
+		event = osSignalWait(autobaudeFail, 100);
+		if (event.status == osEventSignal) {
+			while (1) {
+				HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+				osDelay(30);
+			}
+		}
 	}
 	osThreadTerminate(NULL);
 }
@@ -541,9 +575,9 @@ void blinkLed2Thread(void const *argument) {
 
 	while (1) {
 		osSignalWait(canReceived, osWaitForever);
-		for (i = 0; i < 12; ++i) {
+		for (i = 0; i < 15; ++i) {
 			HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
-			osDelay(70);
+			osDelay(40);
 		}
 		HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
 	}
@@ -583,6 +617,55 @@ void logCANBusThread(void const *argument) {
 		strcat(sTmp, "\r\n");
 		writeToSDBuffer(sTmp);
 		osMailFree(canMsgBoxHandle, canMsg);
+	}
+	osThreadTerminate(NULL);
+}
+
+/**
+ * Thread that will attempt to autobaude
+ * @param argument
+ */
+void autobaudeCANThread(void const *argument) {
+	osEvent event;
+	uint8_t brs;
+	int index = -1;
+	while (1) {
+		// wait for interrupt signal that this bauderate settings are OK
+		event = osSignalWait(canReceived, AUTOBAUDE_TIMEOUT);
+		if (event.status == osEventTimeout) {
+			// get index of current bauderate
+			index = getCANBaudeRateArrayNo(baud);
+			if (index == -1) {
+				osSignalSet(autobaudeFail, blinkLed1TID);
+				_Error_Handler(__FILE__, __LINE__);
+				while (1)
+					;
+			}
+			index++;
+			if (index > NELEMS(CAN_BitrateSettingsArray)) {
+				// autobauding failed
+				osSignalSet(autobaudeFail, blinkLed1TID);
+				vTaskDelete(NULL);
+			}
+			//set up new bauderate
+			// configure CAN
+
+			setCANBaudeRate((uint8_t) index);
+		}
+		// We have received the message this is correct bauderate
+		if (event.status == osEventSignal) {
+			// delete task blinking LED1 and switch it off
+			//vTaskSuspendAll();
+			//vTaskDelete(blinkLed1TID);
+			vTaskSuspend(blinkLed1TID);
+			//xTaskResumeAll();
+			HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
+			// stop autobauding
+			autobaude = 0;
+			__HAL_CAN_ENABLE_IT(&hcan, CAN_IT_FMP0);
+			//vTaskDelete(NULL);
+			vTaskSuspend(NULL);
+		}
 	}
 	osThreadTerminate(NULL);
 }
@@ -646,7 +729,6 @@ static void copy_buffer(void)
  */
 static void request_write(void)
 {
-	static FRESULT fresult;
 	uint32_t bytes_written = 0;
 
 	if (bReqWrite)
@@ -655,8 +737,6 @@ static void request_write(void)
 	// carry out write operation
 	align_buffer();
 	copy_buffer();
-
-	uint32_t blen = 1023;
 
 	//go to the end of the file
 	//fresult = f_lseek(&logfile, logfile->fsize);
@@ -729,6 +809,33 @@ void testWriteToSD(void) {
 	fresult = f_close(&file);
 }
 
+void setCANBaudeRate(uint8_t brs) {
+	if (HAL_CAN_DeInit(&hcan) != HAL_OK) {
+		_Error_Handler(__FILE__, __LINE__);
+	}
+	baud = CAN_BitrateSettingsArray[brs].bitrate;
+	hcan.Init.Prescaler = CAN_BitrateSettingsArray[brs].Prescaler;
+	hcan.Init.BS1 = CAN_BitrateSettingsArray[brs].BS1;
+	hcan.Init.BS2 = CAN_BitrateSettingsArray[brs].BS2;
+
+	if (HAL_CAN_Init(&hcan) != HAL_OK) {
+		_Error_Handler(__FILE__, __LINE__);
+	}
+}
+
+void setCANIRQ(void) {
+	HAL_NVIC_DisableIRQ(USB_LP_CAN1_RX0_IRQn);
+
+	// start the CAN interrupt
+	HAL_CAN_Receive_IT(&hcan, CAN_FIFO0);
+
+	HAL_NVIC_SetPriority(USB_LP_CAN1_RX0_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
+
+	__HAL_CAN_CLEAR_FLAG(&hcan, CAN_IT_FMP0);
+	__HAL_CAN_ENABLE_IT(&hcan, CAN_IT_FMP0);
+}
+
 /**
  * @brief Reads the configuration file and then loads the settings into the
  * @brief CAN peripheral and restart it
@@ -739,7 +846,6 @@ static int read_config_file(void) {
 	FIL file;
 	int value;
 	char name[128];
-	int baud = 500;
 	int res = 0;
 	int ack = 0;
 
@@ -767,7 +873,15 @@ static int read_config_file(void) {
 		}
 
 		if (strcmp(name, "baud") == 0) {
-			baud = value;
+			// if baude value is 0 then enter into autobaude mode
+			if (1/*value == 0*/) {
+				autobaude = 1;
+				wasAutobauding = 1;
+				// start with the highest value
+				baud = CAN_BitrateSettingsArray[0].bitrate;
+			} else {
+				baud = value;
+			}
 			res = 1; // at least we got baudrate, config file accepted
 		} else if (strcmp(name, "ack_en") == 0) {
 			ack = value;
@@ -786,38 +900,17 @@ static int read_config_file(void) {
 	// close SD file
 	f_close(&file);
 
-	// configure CAN
-	brs = (uint8_t) get_CAN_setBaudeRate(baud);
-
-	HAL_NVIC_DisableIRQ(USB_LP_CAN1_RX0_IRQn);
-
-	if (HAL_CAN_DeInit(&hcan) != HAL_OK) {
-		_Error_Handler(__FILE__, __LINE__);
-	}
-	hcan.Init.Prescaler = CAN_BitrateSettingsArray[brs].Prescaler;
-	hcan.Init.BS1 = CAN_BitrateSettingsArray[brs].BS1;
-	hcan.Init.BS2 = CAN_BitrateSettingsArray[brs].BS2;
 	if (ack) {
 		hcan.Init.Mode = CAN_MODE_NORMAL;
 	} else {
-		hcan.Init.Mode = CAN_MODE_NORMAL; //CAN_MODE_SILENT;
+		hcan.Init.Mode = CAN_MODE_SILENT;
 	}
+	// configure CAN
+	brs = (uint8_t) get_CAN_setBaudeRate(baud);
 
-	if (HAL_CAN_Init(&hcan) != HAL_OK) {
-		_Error_Handler(__FILE__, __LINE__);
-	}
+	setCANBaudeRate(brs);
 
-	// start the CAN interrupt
-	HAL_CAN_Receive_IT(&hcan, CAN_FIFO0);
-
-	HAL_NVIC_SetPriority(USB_LP_CAN1_RX0_IRQn, 5, 0);
-	HAL_NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
-
-	HAL_NVIC_SetPriority(CAN1_RX1_IRQn, 5, 0);
-	HAL_NVIC_EnableIRQ(CAN1_RX1_IRQn);
-
-	__HAL_CAN_CLEAR_FLAG(&hcan, CAN_IT_FMP0);
-	__HAL_CAN_ENABLE_IT(&hcan, CAN_IT_FMP0);
+	setCANIRQ();
 
 	return res;
 }
@@ -827,6 +920,7 @@ static int read_config_file(void) {
  */
 void stopLog() {
 	__HAL_CAN_DISABLE_IT(&hcan, CAN_IT_FMP0);
+	__HAL_CAN_CLEAR_FLAG(&hcan, CAN_IT_FMP0);
 	// write the rest of the log on the SD card
 	request_write();
 	fclose_(sLine);
@@ -905,6 +999,21 @@ int get_CAN_setBaudeRate(uint32_t bitrate) {
 		}
 	}
 	return 0;
+}
+
+/**
+ * Searches for the bitrate in @CAN_BitrateSettingsArray and returns index
+ * of that bitrate from the array
+ * @param uint32_t bitrate
+ * @return int Index of that specific bitrate | -1 on error
+ */
+int getCANBaudeRateArrayNo(uint32_t bitrate) {
+	for (int i = 0; i < NELEMS(CAN_BitrateSettingsArray); ++i) {
+		if (bitrate == CAN_BitrateSettingsArray[i].bitrate) {
+			return i;
+		}
+	}
+	return -1;
 }
 
 /**
