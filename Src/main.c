@@ -130,8 +130,8 @@ const CAN_BitrateSetting CAN_BitrateSettingsArray[10] = {
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
 #define FILENAME_LENGTH 				64
-#define SD_WRITE_BUFFER             	(1024*1)
-#define SD_WRITE_BUFFER_FLUSH_LIMIT 	(512*1)
+#define SD_WRITE_BUFFER             	(1024*2)
+#define SD_WRITE_BUFFER_FLUSH_LIMIT 	(1024*1)
 #define MMCSD_BLOCK_SIZE 				512
 #define AUTOBAUDE_TIMEOUT				2000 //Autobaude timeout for each setting
 // macro for number of elements in array
@@ -750,7 +750,7 @@ static void request_write(void)
 	copy_buffer();
 
 	//go to the end of the file
-	f_lseek(&logfile, logfile->fsize);
+	//f_lseek(&logfile, logfile->fsize);
 
 	bytes_written = fwrite_(sd_buffer_for_write, 1, sd_buffer_length_for_write,
 			logfile);
